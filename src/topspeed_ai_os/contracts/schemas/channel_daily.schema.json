@@ -10,15 +10,9 @@
     "channel_fees": {
       "anyOf": [
         {
-          "oneOf": [
-            {
-              "type": "number"
-            },
-            {
-              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-              "type": "string"
-            }
-          ],
+          "format": "canonical-decimal",
+          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+          "type": "string",
           "x-logical-type": "DECIMAL"
         },
         {
@@ -40,15 +34,13 @@
     "conversion_rate": {
       "anyOf": [
         {
-          "oneOf": [
-            {
-              "type": "number"
-            },
-            {
-              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-              "type": "string"
-            }
-          ],
+          "format": "canonical-decimal",
+          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+          "type": "string",
+          "x-decimal-range": {
+            "maximum": "1",
+            "minimum": "0"
+          },
           "x-logical-type": "DECIMAL"
         },
         {
@@ -69,27 +61,15 @@
       "x-timezone-required": true
     },
     "gross_sales": {
-      "oneOf": [
-        {
-          "type": "number"
-        },
-        {
-          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-          "type": "string"
-        }
-      ],
+      "format": "canonical-decimal",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "type": "string",
       "x-logical-type": "DECIMAL"
     },
     "net_sales": {
-      "oneOf": [
-        {
-          "type": "number"
-        },
-        {
-          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-          "type": "string"
-        }
-      ],
+      "format": "canonical-decimal",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "type": "string",
       "x-logical-type": "DECIMAL"
     },
     "orders": {
@@ -106,15 +86,9 @@
       ]
     },
     "refund_amount": {
-      "oneOf": [
-        {
-          "type": "number"
-        },
-        {
-          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-          "type": "string"
-        }
-      ],
+      "format": "canonical-decimal",
+      "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+      "type": "string",
       "x-logical-type": "DECIMAL"
     },
     "refunds": {
@@ -128,15 +102,9 @@
     "settlement_amount": {
       "anyOf": [
         {
-          "oneOf": [
-            {
-              "type": "number"
-            },
-            {
-              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
-              "type": "string"
-            }
-          ],
+          "format": "canonical-decimal",
+          "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+          "type": "string",
           "x-logical-type": "DECIMAL"
         },
         {

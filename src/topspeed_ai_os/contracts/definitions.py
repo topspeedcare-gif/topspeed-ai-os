@@ -19,6 +19,8 @@ from topspeed_ai_os.core.enums import (
     VerificationStatus,
 )
 
+from .logical_types import DECIMAL_PATTERN
+
 CONTRACT_NAMES = (
     "PRODUCT_MASTER",
     "PRODUCT_FACT",
@@ -31,7 +33,6 @@ CONTRACT_NAMES = (
 )
 
 _ULID = r"[0-7][0-9A-HJKMNP-TV-Z]{25}"
-_DECIMAL_PATTERN = r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$"
 _DATETIME_PATTERN = r"(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 
 
@@ -48,14 +49,24 @@ def _integer() -> dict[str, Any]:
     return {"type": "integer"}
 
 
-def _decimal() -> dict[str, Any]:
-    return {
-        "oneOf": [
-            {"type": "number"},
-            {"type": "string", "pattern": _DECIMAL_PATTERN},
-        ],
+def _decimal(*, minimum: str | None = None, maximum: str | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {
+        "type": "string",
+        "pattern": DECIMAL_PATTERN,
+        "format": "canonical-decimal",
         "x-logical-type": "DECIMAL",
     }
+    if minimum is not None or maximum is not None:
+        schema["x-decimal-range"] = {
+            key: value
+            for key, value in (("minimum", minimum), ("maximum", maximum))
+            if value is not None
+        }
+    return schema
+
+
+def _ratio() -> dict[str, Any]:
+    return _decimal(minimum="0", maximum="1")
 
 
 def _date() -> dict[str, Any]:
@@ -116,12 +127,12 @@ CONTRACT_DEFINITIONS: dict[str, dict[str, Any]] = {
             "currency": _string(pattern=r"^[A-Z]{3}$"),
             "purchase_cost": _nullable(_decimal()),
             "sale_price": _nullable(_decimal()),
-            "fee_rate": _nullable(_decimal()),
+            "fee_rate": _nullable(_ratio()),
             "fulfillment_cost": _nullable(_decimal()),
             "expected_return_cost": _nullable(_decimal()),
             "other_variable_cost": _nullable(_decimal()),
             "contribution_margin": _nullable(_decimal()),
-            "contribution_margin_rate": _nullable(_decimal()),
+            "contribution_margin_rate": _nullable(_ratio()),
             "source": _string(),
             "data_as_of": _datetime(),
             "created_at": _datetime(),
@@ -185,7 +196,7 @@ CONTRACT_DEFINITIONS: dict[str, dict[str, Any]] = {
             "channel_fees": _nullable(_decimal()),
             "settlement_amount": _nullable(_decimal()),
             "page_views": _nullable(_integer()),
-            "conversion_rate": _nullable(_decimal()),
+            "conversion_rate": _nullable(_ratio()),
             "run_id": RUN_ID,
             "source": _string(),
             "data_as_of": _datetime(),
@@ -221,8 +232,8 @@ CONTRACT_DEFINITIONS: dict[str, dict[str, Any]] = {
             "ad_orders": _integer(),
             "ad_units": _nullable(_integer()),
             "ad_revenue": _decimal(),
-            "ctr": _nullable(_decimal()),
-            "cvr": _nullable(_decimal()),
+            "ctr": _nullable(_ratio()),
+            "cvr": _nullable(_ratio()),
             "roas": _nullable(_decimal()),
             "source_file_hash": _nullable(SHA256),
             "run_id": RUN_ID,
@@ -401,7 +412,7 @@ CONTRACT_DEFINITIONS: dict[str, dict[str, Any]] = {
             "result": _enum(ResultStatus),
             "error_code": _nullable(_string()),
             "error": _nullable(_string()),
-            "human_edit_ratio": _nullable(_decimal()),
+            "human_edit_ratio": _nullable(_ratio()),
             "idempotency_key": _nullable(IDEMPOTENCY_KEY),
             "started_at": _datetime(),
             "finished_at": _nullable(_datetime()),
