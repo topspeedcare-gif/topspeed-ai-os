@@ -1,0 +1,210 @@
+{
+  "$id": "https://topspeed.local/contracts/v1/approval_queue.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "action_type": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "after_value": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "approval_id": {
+      "minLength": 1,
+      "pattern": "^apr_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "approval_status": {
+      "enum": [
+        "PENDING",
+        "APPROVED",
+        "REJECTED",
+        "EXPIRED",
+        "CANCELLED",
+        "EXECUTED",
+        "FAILED"
+      ],
+      "type": "string"
+    },
+    "approved_by": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "audit_status": {
+      "enum": [
+        "PASS",
+        "WARN",
+        "FAIL"
+      ],
+      "type": "string"
+    },
+    "audit_summary": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "before_value": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "data_as_of": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "decided_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+          "type": "string",
+          "x-timezone-required": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "execution_tool": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "idempotency_key": {
+      "minLength": 1,
+      "pattern": "^idem_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "payload_hash": {
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "proposed_payload": {
+      "type": [
+        "object",
+        "array"
+      ]
+    },
+    "requested_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "requested_by": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "risk_level": {
+      "enum": [
+        "LOW",
+        "MEDIUM",
+        "HIGH"
+      ],
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "sku": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "source": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "target_id": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "target_type": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "pattern": "^task_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    }
+  },
+  "required": [
+    "action_type",
+    "after_value",
+    "approval_id",
+    "approval_status",
+    "audit_status",
+    "audit_summary",
+    "before_value",
+    "created_at",
+    "data_as_of",
+    "execution_tool",
+    "expires_at",
+    "idempotency_key",
+    "payload_hash",
+    "proposed_payload",
+    "requested_at",
+    "requested_by",
+    "risk_level",
+    "run_id",
+    "source",
+    "target_id",
+    "target_type",
+    "task_id",
+    "updated_at"
+  ],
+  "title": "APPROVAL_QUEUE",
+  "type": "object"
+}

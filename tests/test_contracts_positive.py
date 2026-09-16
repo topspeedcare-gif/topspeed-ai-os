@@ -1,0 +1,372 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+from conftest import FACT_ID, SKU
+from jsonschema import Draft202012Validator
+
+from topspeed_ai_os.contracts import CONTRACT_NAMES, build_schema, load_schema, validate_record
+
+
+@pytest.mark.parametrize("contract_name", CONTRACT_NAMES)
+def test_all_eight_contracts_accept_valid_records(contract_name, records):
+    record = records()[contract_name]
+    validate_record(
+        contract_name,
+        record,
+        known_skus={SKU},
+        fact_sku_by_id={FACT_ID: SKU},
+    )
+
+
+@pytest.mark.parametrize("contract_name", CONTRACT_NAMES)
+def test_committed_schemas_are_valid_draft_2020_12(contract_name):
+    Draft202012Validator.check_schema(load_schema(contract_name))
+
+
+@pytest.mark.parametrize("contract_name", CONTRACT_NAMES)
+def test_committed_schemas_match_generated_definitions(contract_name):
+    assert load_schema(contract_name) == build_schema(contract_name)
+
+
+def test_exactly_eight_schema_files_are_committed():
+    schema_dir = Path(__file__).parents[1] / "src" / "topspeed_ai_os" / "contracts" / "schemas"
+    schema_names = {
+        json.loads(path.read_text(encoding="utf-8"))["title"]
+        for path in schema_dir.glob("*.schema.json")
+    }
+    assert schema_names == set(CONTRACT_NAMES)
+
+
+EXPECTED_FIELDS_AND_REQUIRED = {
+    "PRODUCT_MASTER": (
+        {
+            "sku",
+            "product_name",
+            "category",
+            "channel_ids",
+            "stage",
+            "grade",
+            "status",
+            "supplier",
+            "currency",
+            "purchase_cost",
+            "sale_price",
+            "fee_rate",
+            "fulfillment_cost",
+            "expected_return_cost",
+            "other_variable_cost",
+            "contribution_margin",
+            "contribution_margin_rate",
+            "source",
+            "data_as_of",
+            "created_at",
+            "updated_at",
+        },
+        {
+            "sku",
+            "product_name",
+            "category",
+            "stage",
+            "status",
+            "currency",
+            "source",
+            "data_as_of",
+            "created_at",
+            "updated_at",
+        },
+    ),
+    "PRODUCT_FACT": (
+        {
+            "fact_id",
+            "sku",
+            "fact_type",
+            "fact_value",
+            "unit",
+            "verification_status",
+            "source",
+            "source_uri",
+            "source_checksum",
+            "verified_at",
+            "valid_from",
+            "valid_to",
+            "run_id",
+            "task_id",
+            "data_as_of",
+            "created_at",
+        },
+        {
+            "fact_id",
+            "sku",
+            "fact_type",
+            "fact_value",
+            "verification_status",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+    ),
+    "CHANNEL_DAILY": (
+        {
+            "channel",
+            "stat_date",
+            "sku",
+            "channel_product_id",
+            "gross_sales",
+            "net_sales",
+            "orders",
+            "units_sold",
+            "refunds",
+            "refund_amount",
+            "channel_fees",
+            "settlement_amount",
+            "page_views",
+            "conversion_rate",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+        {
+            "channel",
+            "stat_date",
+            "sku",
+            "gross_sales",
+            "net_sales",
+            "orders",
+            "units_sold",
+            "refunds",
+            "refund_amount",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+    ),
+    "AD_DAILY": (
+        {
+            "channel",
+            "stat_date",
+            "sku",
+            "campaign_id",
+            "campaign_name",
+            "ad_group_id",
+            "impressions",
+            "clicks",
+            "ad_spend",
+            "ad_orders",
+            "ad_units",
+            "ad_revenue",
+            "ctr",
+            "cvr",
+            "roas",
+            "source_file_hash",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+        {
+            "channel",
+            "stat_date",
+            "sku",
+            "campaign_id",
+            "impressions",
+            "clicks",
+            "ad_spend",
+            "ad_orders",
+            "ad_revenue",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+    ),
+    "INVENTORY": (
+        {
+            "snapshot_at",
+            "sku",
+            "location",
+            "on_hand_qty",
+            "available_qty",
+            "reserved_qty",
+            "inbound_qty",
+            "avg_daily_units",
+            "stock_days",
+            "lead_time_days",
+            "safety_stock_qty",
+            "reorder_point_qty",
+            "recommended_order_qty",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+        {
+            "snapshot_at",
+            "sku",
+            "location",
+            "on_hand_qty",
+            "available_qty",
+            "reserved_qty",
+            "inbound_qty",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+        },
+    ),
+    "CONTENT_ASSET": (
+        {
+            "asset_id",
+            "sku",
+            "asset_type",
+            "title",
+            "storage_uri",
+            "checksum_sha256",
+            "mime_type",
+            "version",
+            "status",
+            "claim_fact_ids",
+            "generated_by",
+            "task_id",
+            "run_id",
+            "approved_by",
+            "source",
+            "data_as_of",
+            "created_at",
+            "updated_at",
+        },
+        {
+            "asset_id",
+            "sku",
+            "asset_type",
+            "title",
+            "storage_uri",
+            "checksum_sha256",
+            "mime_type",
+            "version",
+            "status",
+            "claim_fact_ids",
+            "generated_by",
+            "task_id",
+            "run_id",
+            "source",
+            "data_as_of",
+            "created_at",
+            "updated_at",
+        },
+    ),
+    "APPROVAL_QUEUE": (
+        {
+            "approval_id",
+            "task_id",
+            "run_id",
+            "sku",
+            "action_type",
+            "target_type",
+            "target_id",
+            "proposed_payload",
+            "payload_hash",
+            "before_value",
+            "after_value",
+            "risk_level",
+            "audit_status",
+            "audit_summary",
+            "approval_status",
+            "requested_by",
+            "approved_by",
+            "requested_at",
+            "decided_at",
+            "expires_at",
+            "execution_tool",
+            "idempotency_key",
+            "source",
+            "data_as_of",
+            "error",
+            "created_at",
+            "updated_at",
+        },
+        {
+            "approval_id",
+            "task_id",
+            "run_id",
+            "action_type",
+            "target_type",
+            "target_id",
+            "proposed_payload",
+            "payload_hash",
+            "before_value",
+            "after_value",
+            "risk_level",
+            "audit_status",
+            "audit_summary",
+            "approval_status",
+            "requested_by",
+            "requested_at",
+            "expires_at",
+            "execution_tool",
+            "idempotency_key",
+            "source",
+            "data_as_of",
+            "created_at",
+            "updated_at",
+        },
+    ),
+    "AI_RUN_LOG": (
+        {
+            "log_id",
+            "event_seq",
+            "event_type",
+            "run_id",
+            "task_id",
+            "parent_run_id",
+            "agent",
+            "skill",
+            "sku",
+            "source",
+            "data_as_of",
+            "input_summary",
+            "output_summary",
+            "tool_name",
+            "approval_id",
+            "approval_status",
+            "audit_status",
+            "before_value",
+            "after_value",
+            "result",
+            "error_code",
+            "error",
+            "human_edit_ratio",
+            "idempotency_key",
+            "started_at",
+            "finished_at",
+            "created_at",
+        },
+        {
+            "log_id",
+            "event_seq",
+            "event_type",
+            "run_id",
+            "task_id",
+            "agent",
+            "source",
+            "input_summary",
+            "output_summary",
+            "result",
+            "started_at",
+            "created_at",
+        },
+    ),
+}
+
+
+@pytest.mark.parametrize("contract_name", CONTRACT_NAMES)
+def test_schema_fields_and_requiredness_match_frozen_contract(contract_name):
+    schema = load_schema(contract_name)
+    expected_fields, expected_required = EXPECTED_FIELDS_AND_REQUIRED[contract_name]
+    assert set(schema["properties"]) == expected_fields
+    assert set(schema["required"]) == expected_required
+    assert schema["additionalProperties"] is False

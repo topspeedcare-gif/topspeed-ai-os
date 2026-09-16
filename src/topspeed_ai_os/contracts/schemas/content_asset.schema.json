@@ -1,0 +1,134 @@
+{
+  "$id": "https://topspeed.local/contracts/v1/content_asset.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approved_by": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "asset_id": {
+      "minLength": 1,
+      "pattern": "^asset_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "asset_type": {
+      "enum": [
+        "COPY",
+        "IMAGE_BRIEF",
+        "IMAGE",
+        "DETAIL_PAGE",
+        "AD_CREATIVE"
+      ],
+      "type": "string"
+    },
+    "checksum_sha256": {
+      "minLength": 1,
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "claim_fact_ids": {
+      "items": {
+        "minLength": 1,
+        "pattern": "^fact_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+        "type": "string"
+      },
+      "type": "array",
+      "uniqueItems": true
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "data_as_of": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "generated_by": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "mime_type": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "sku": {
+      "minLength": 1,
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)+$",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "APPROVED",
+        "PUBLISHED",
+        "ARCHIVED"
+      ],
+      "type": "string"
+    },
+    "storage_uri": {
+      "format": "uri",
+      "minLength": 1,
+      "type": "string"
+    },
+    "task_id": {
+      "minLength": 1,
+      "pattern": "^task_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "version": {
+      "type": "integer"
+    }
+  },
+  "required": [
+    "asset_id",
+    "asset_type",
+    "checksum_sha256",
+    "claim_fact_ids",
+    "created_at",
+    "data_as_of",
+    "generated_by",
+    "mime_type",
+    "run_id",
+    "sku",
+    "source",
+    "status",
+    "storage_uri",
+    "task_id",
+    "title",
+    "updated_at",
+    "version"
+  ],
+  "title": "CONTENT_ASSET",
+  "type": "object"
+}

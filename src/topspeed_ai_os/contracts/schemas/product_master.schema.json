@@ -1,0 +1,270 @@
+{
+  "$id": "https://topspeed.local/contracts/v1/product_master.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "category": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "channel_ids": {
+      "anyOf": [
+        {
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contribution_margin": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contribution_margin_rate": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "currency": {
+      "minLength": 1,
+      "pattern": "^[A-Z]{3}$",
+      "type": "string"
+    },
+    "data_as_of": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "expected_return_cost": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fee_rate": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "fulfillment_cost": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "grade": {
+      "anyOf": [
+        {
+          "enum": [
+            "S",
+            "A",
+            "B",
+            "T",
+            "X"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "other_variable_cost": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "product_name": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "purchase_cost": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sale_price": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sku": {
+      "minLength": 1,
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)+$",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "stage": {
+      "enum": [
+        "SOURCE",
+        "TEST",
+        "SCALE",
+        "CORE",
+        "EXIT"
+      ],
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "DRAFT",
+        "ACTIVE",
+        "PAUSED",
+        "ENDED"
+      ],
+      "type": "string"
+    },
+    "supplier": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updated_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    }
+  },
+  "required": [
+    "category",
+    "created_at",
+    "currency",
+    "data_as_of",
+    "product_name",
+    "sku",
+    "source",
+    "stage",
+    "status",
+    "updated_at"
+  ],
+  "title": "PRODUCT_MASTER",
+  "type": "object"
+}

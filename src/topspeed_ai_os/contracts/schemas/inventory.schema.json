@@ -1,0 +1,148 @@
+{
+  "$id": "https://topspeed.local/contracts/v1/inventory.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "available_qty": {
+      "type": "integer"
+    },
+    "avg_daily_units": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "data_as_of": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "inbound_qty": {
+      "type": "integer"
+    },
+    "lead_time_days": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "location": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "on_hand_qty": {
+      "type": "integer"
+    },
+    "recommended_order_qty": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reorder_point_qty": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reserved_qty": {
+      "type": "integer"
+    },
+    "run_id": {
+      "minLength": 1,
+      "pattern": "^run_[0-7][0-9A-HJKMNP-TV-Z]{25}$",
+      "type": "string"
+    },
+    "safety_stock_qty": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sku": {
+      "minLength": 1,
+      "pattern": "^[A-Z0-9]+(?:-[A-Z0-9]+)+$",
+      "type": "string"
+    },
+    "snapshot_at": {
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$",
+      "type": "string",
+      "x-timezone-required": true
+    },
+    "source": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "stock_days": {
+      "anyOf": [
+        {
+          "oneOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^-?(?:0|[1-9][0-9]*)(?:\\.[0-9]+)?$",
+              "type": "string"
+            }
+          ],
+          "x-logical-type": "DECIMAL"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "available_qty",
+    "created_at",
+    "data_as_of",
+    "inbound_qty",
+    "location",
+    "on_hand_qty",
+    "reserved_qty",
+    "run_id",
+    "sku",
+    "snapshot_at",
+    "source"
+  ],
+  "title": "INVENTORY",
+  "type": "object"
+}
