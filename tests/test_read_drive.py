@@ -69,7 +69,6 @@ def make_tool(outcomes, scopes=None, sleeps=None):
     tool = DriveReadTool(
         credential_provider=provider,
         client=client,
-        execution_mode=ExecutionMode.MOCK,
         timeout_seconds=9,
         retry_policy=RetryPolicy(max_attempts=3, base_delay_seconds=0, max_delay_seconds=0),
         clock=lambda: NOW,
@@ -99,6 +98,32 @@ def test_modified_time_is_not_inferred_as_data_as_of():
     result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
     assert result.source_metadata.modified_time == "2026-09-15T12:00:00Z"
     assert result.source_metadata.data_as_of is None
+
+
+def test_explicit_typed_source_data_as_of_is_preserved():
+    explicit = DriveResponse(
+        b'{"id":"safe-file_123"}',
+        METADATA,
+        source_data_as_of="2026-09-15T10:30:00+09:00",
+    )
+    tool, _, _ = make_tool([explicit])
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+    assert result.status is ToolStatus.SUCCESS
+    assert result.source_metadata.data_as_of.isoformat() == "2026-09-15T10:30:00+09:00"
+    assert result.source_metadata.modified_time == METADATA["modifiedTime"]
+
+
+@pytest.mark.parametrize("timestamp", ["2026-09-15T10:30:00", "not-a-timestamp", ""])
+def test_invalid_typed_source_data_as_of_is_failure(timestamp):
+    response = DriveResponse(
+        b'{"id":"safe-file_123"}',
+        METADATA,
+        source_data_as_of=timestamp,
+    )
+    tool, _, _ = make_tool([response])
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
 
 
 def test_raw_download_preserves_bytes_and_hides_token():
@@ -224,6 +249,34 @@ def test_typed_client_failures_and_bounded_retry(failure, category, attempts):
     assert len(client.calls) == attempts
 
 
+@pytest.mark.parametrize(
+    ("status", "category", "attempts"),
+    [
+        (401, ErrorCategory.AUTHENTICATION, 1),
+        (403, ErrorCategory.AUTHORIZATION, 1),
+        (404, ErrorCategory.SOURCE_NOT_FOUND, 1),
+        (429, ErrorCategory.RATE_LIMIT, 3),
+        (500, ErrorCategory.UPSTREAM_ERROR, 3),
+        (302, ErrorCategory.UPSTREAM_ERROR, 1),
+        (201, ErrorCategory.UPSTREAM_ERROR, 1),
+        (206, ErrorCategory.UPSTREAM_ERROR, 1),
+    ],
+)
+def test_tool_maps_raw_drive_response_status_fail_closed(status, category, attempts):
+    response = DriveResponse(
+        b"response",
+        METADATA,
+        http_status=status,
+        headers={"Retry-After": "0"},
+    )
+    tool, _, client = make_tool([response] * attempts)
+    result = tool.read(operation=DriveOperation.DOWNLOAD_FILE, file_id=FILE_ID)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is category
+    assert result.attempt_count == attempts
+    assert len(client.calls) == attempts
+
+
 def test_timeout_retries_then_succeeds_with_stable_request_id():
     tool, _, client = make_tool([TimeoutError(), drive_response(b"ok")])
     result = tool.read(operation=DriveOperation.DOWNLOAD_FILE, file_id=FILE_ID)
@@ -287,7 +340,6 @@ def test_unexpected_credential_exception_is_typed_and_redacted():
     tool = DriveReadTool(
         credential_provider=UnexpectedCredentialProvider(),
         client=client,
-        execution_mode=ExecutionMode.MOCK,
         clock=lambda: NOW,
         request_id_factory=lambda: REQUEST_ID,
     )
@@ -304,3 +356,15 @@ def test_unexpected_client_exception_is_typed_and_redacted():
     assert result.attempt_count == 1
     assert "FAKE_TOKEN_MUST_NOT_ESCAPE" not in repr(result)
     assert len(client.calls) == 1
+
+
+def test_fake_drive_client_cannot_be_marked_live_by_constructor_override():
+    provider = StaticCredentialProvider(
+        BearerCredentials(FAKE_TOKEN, frozenset({DRIVE_READONLY_SCOPE}))
+    )
+    with pytest.raises(TypeError):
+        DriveReadTool(
+            credential_provider=provider,
+            client=FakeDriveClient([drive_response()]),
+            execution_mode=ExecutionMode.LIVE,  # type: ignore[call-arg]
+        )

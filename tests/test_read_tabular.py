@@ -7,7 +7,7 @@ import pytest
 from openpyxl import Workbook
 
 from topspeed_ai_os.core.ids import generate_run_id, generate_task_id
-from topspeed_ai_os.tools import ErrorCategory, ExecutionMode, ToolStatus, raw_sha256
+from topspeed_ai_os.tools import ErrorCategory, ToolStatus, raw_sha256
 from topspeed_ai_os.tools.read import FormulaCell, TabularReadTool
 
 NOW = datetime(2026, 9, 16, 0, 0, tzinfo=UTC)
@@ -17,7 +17,6 @@ REQUEST_ID = "req_" + ("d" * 32)
 @pytest.fixture
 def tool():
     return TabularReadTool(
-        execution_mode=ExecutionMode.MOCK,
         clock=lambda: NOW,
         request_id_factory=lambda: REQUEST_ID,
     )
@@ -210,6 +209,16 @@ def test_task_run_request_and_source_metadata(tool):
     assert result.request_id == REQUEST_ID
     assert result.source_metadata.fetched_at == NOW
     assert result.source_metadata.data_as_of is None
+
+
+def test_caller_cannot_inject_data_as_of(tool):
+    with pytest.raises(TypeError):
+        tool.read(
+            raw_bytes=b"name,value\na,1\n",
+            source_uri="file:///input.csv",
+            file_format="csv",
+            data_as_of=NOW,  # type: ignore[call-arg]
+        )
 
 
 def test_invalid_correlation_id_is_rejected(tool):

@@ -45,14 +45,14 @@ class ReadTool:
         self,
         *,
         tool_name: str,
-        execution_mode: ExecutionMode,
+        _execution_mode: ExecutionMode,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: Callable[[], str] | None = None,
     ) -> None:
-        if not isinstance(execution_mode, ExecutionMode):
-            raise TypeError("execution_mode must be an ExecutionMode")
+        if not isinstance(_execution_mode, ExecutionMode):
+            raise TypeError("_execution_mode must be an ExecutionMode")
         self.tool_name = tool_name
-        self.execution_mode = execution_mode
+        self.execution_mode = _execution_mode
         self._clock = clock or (lambda: datetime.now(UTC))
         self._request_id_factory = request_id_factory or (lambda: f"req_{secrets.token_hex(16)}")
 

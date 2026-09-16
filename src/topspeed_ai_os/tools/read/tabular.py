@@ -44,13 +44,12 @@ class TabularReadTool(ReadTool):
     def __init__(
         self,
         *,
-        execution_mode: ExecutionMode,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: Callable[[], str] | None = None,
     ) -> None:
         super().__init__(
             tool_name="tabular_read",
-            execution_mode=execution_mode,
+            _execution_mode=ExecutionMode.MOCK,
             clock=clock,
             request_id_factory=request_id_factory,
         )

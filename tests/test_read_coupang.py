@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
 from collections.abc import Mapping
 from datetime import UTC, datetime
 
@@ -13,13 +11,19 @@ from topspeed_ai_os.tools import (
     ErrorCategory,
     ExecutionMode,
     HttpResponse,
+    ProductionHttpTransport,
     RetryPolicy,
     StaticCredentialProvider,
     ToolFailure,
     ToolStatus,
     raw_sha256,
 )
-from topspeed_ai_os.tools.read import CoupangEndpoint, CoupangHmacSigner, CoupangReadTool
+from topspeed_ai_os.tools.read import (
+    CoupangEndpoint,
+    CoupangHmacSigner,
+    CoupangReadTool,
+    verified_coupang_operation_count,
+)
 
 NOW = datetime(2026, 9, 16, 0, 0, tzinfo=UTC)
 REQUEST_ID = "req_" + ("b" * 32)
@@ -71,14 +75,13 @@ def response(status=200, body=b'{"items":[]}', url=None, headers=None):
     )
 
 
-def make_tool(outcomes, *, mode=ExecutionMode.MOCK, endpoint=ENDPOINT, sleeps=None):
+def make_tool(outcomes, *, endpoint=ENDPOINT, sleeps=None):
     provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR"))
     transport = FakeTransport(outcomes)
     tool = CoupangReadTool(
         credential_provider=provider,
         transport=transport,
         endpoints=(endpoint,),
-        execution_mode=mode,
         timeout_seconds=7,
         retry_policy=RetryPolicy(max_attempts=3, base_delay_seconds=0, max_delay_seconds=0),
         clock=lambda: NOW,
@@ -112,6 +115,60 @@ def test_approved_get_success_is_typed_and_uses_raw_checksum():
     assert transport.calls[0]["method"] == "GET"
     assert transport.calls[0]["follow_redirects"] is False
     assert transport.calls[0]["timeout"] == 7
+
+
+def test_explicit_operation_data_as_of_is_preserved():
+    endpoint = CoupangEndpoint(
+        operation=ENDPOINT.operation,
+        path_template=ENDPOINT.path_template,
+        parameter_names=ENDPOINT.parameter_names,
+        allowed_query_names=ENDPOINT.allowed_query_names,
+        data_as_of_path=("source", "asOf"),
+    )
+    tool, _, _ = make_tool(
+        [response(body=b'{"items":[],"source":{"asOf":"2026-09-15T23:00:00Z"}}')],
+        endpoint=endpoint,
+    )
+    result = invoke(tool)
+    assert result.status is ToolStatus.SUCCESS
+    assert result.source_metadata.data_as_of == datetime(2026, 9, 15, 23, 0, tzinfo=UTC)
+    assert result.source_metadata.data_as_of != result.source_metadata.fetched_at
+
+
+def test_missing_or_uncontracted_timestamp_is_not_inferred():
+    contracted = CoupangEndpoint(
+        operation=ENDPOINT.operation,
+        path_template=ENDPOINT.path_template,
+        parameter_names=ENDPOINT.parameter_names,
+        allowed_query_names=ENDPOINT.allowed_query_names,
+        data_as_of_path=("asOf",),
+    )
+    missing_tool, _, _ = make_tool(
+        [response(body=b'{"updatedAt":"2026-09-15T00:00:00Z"}')], endpoint=contracted
+    )
+    generic_tool, _, _ = make_tool([response(body=b'{"updatedAt":"2026-09-15T00:00:00Z"}')])
+    assert invoke(missing_tool).source_metadata.data_as_of is None
+    assert invoke(generic_tool).source_metadata.data_as_of is None
+
+
+@pytest.mark.parametrize("timestamp", ["2026-09-15T23:00:00", "not-a-timestamp", 123])
+def test_invalid_explicit_data_as_of_is_typed_failure(timestamp):
+    endpoint = CoupangEndpoint(
+        operation=ENDPOINT.operation,
+        path_template=ENDPOINT.path_template,
+        parameter_names=ENDPOINT.parameter_names,
+        allowed_query_names=ENDPOINT.allowed_query_names,
+        data_as_of_path=("asOf",),
+    )
+    body = (
+        f'{{"items":[],"asOf":{timestamp}}}'
+        if isinstance(timestamp, int)
+        else f'{{"items":[],"asOf":"{timestamp}"}}'
+    ).encode()
+    tool, _, _ = make_tool([response(body=body)], endpoint=endpoint)
+    result = invoke(tool)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
 
 
 @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
@@ -164,20 +221,38 @@ def test_exact_host_and_redirect_destination_are_enforced():
 
 
 def test_unverified_endpoint_cannot_be_used_in_live_mode():
-    with pytest.raises(ValueError, match="verified endpoints"):
-        make_tool([response()], mode=ExecutionMode.LIVE)
+    provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "vendor"))
+    with pytest.raises(TypeError):
+        CoupangReadTool(
+            credential_provider=provider,
+            transport=FakeTransport([response()]),
+            endpoints=(ENDPOINT,),
+            execution_mode=ExecutionMode.LIVE,  # type: ignore[call-arg]
+        )
 
 
 def test_verified_endpoint_preserves_live_mode_without_mock_spoofing():
-    endpoint = CoupangEndpoint(
-        operation=ENDPOINT.operation,
-        path_template=ENDPOINT.path_template,
-        parameter_names=ENDPOINT.parameter_names,
-        allowed_query_names=ENDPOINT.allowed_query_names,
-        verified_live=True,
+    with pytest.raises(TypeError):
+        CoupangEndpoint(
+            operation=ENDPOINT.operation,
+            path_template=ENDPOINT.path_template,
+            parameter_names=ENDPOINT.parameter_names,
+            verified_live=True,  # type: ignore[call-arg]
+        )
+
+
+def test_production_transport_cannot_register_arbitrary_live_endpoint():
+    transport = ProductionHttpTransport(
+        allowed_hosts=frozenset({"api-gateway.coupang.com"}),
     )
-    tool, _, _ = make_tool([response()], mode=ExecutionMode.LIVE, endpoint=endpoint)
-    assert invoke(tool).execution_mode is ExecutionMode.LIVE
+    provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "vendor"))
+    with pytest.raises(ValueError, match="no verified operation"):
+        CoupangReadTool(
+            credential_provider=provider,
+            transport=transport,
+            endpoints=(ENDPOINT,),
+        )
+    assert verified_coupang_operation_count() == 0
 
 
 def test_hmac_fixture_is_deterministic():
@@ -188,10 +263,12 @@ def test_hmac_fixture_is_deterministic():
         url=url,
         credentials=CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR"),
     )
-    message = b"260916T000000ZGET/mock/read/abcpage=1"
-    expected = hmac.new(FAKE_SECRET.encode(), message, hashlib.sha256).hexdigest()
-    assert expected in headers["Authorization"]
-    assert "260916T000000Z" in headers["Authorization"]
+    expected_authorization = (
+        "CEA algorithm=HmacSHA256, "
+        "access-key=FAKE_COUPANG_ACCESS_SENTINEL, signed-date=260916T000000Z, "
+        "signature=0282304f5da7894627049a0f9a6544358d50c83a7f3148bb14b48675baff4f76"
+    )
+    assert headers["Authorization"] == expected_authorization
 
 
 class MissingCredentialProvider:
@@ -205,7 +282,6 @@ def test_credential_missing_is_typed_without_transport_call():
         credential_provider=MissingCredentialProvider(),
         transport=transport,
         endpoints=(ENDPOINT,),
-        execution_mode=ExecutionMode.MOCK,
         clock=lambda: NOW,
         request_id_factory=lambda: REQUEST_ID,
     )
@@ -225,7 +301,6 @@ def test_unexpected_credential_exception_is_typed_and_redacted():
         credential_provider=UnexpectedCredentialProvider(),
         transport=transport,
         endpoints=(ENDPOINT,),
-        execution_mode=ExecutionMode.MOCK,
         clock=lambda: NOW,
         request_id_factory=lambda: REQUEST_ID,
     )
@@ -325,5 +400,11 @@ def test_secret_and_raw_payload_are_absent_from_result_repr():
 
 
 def test_execution_mode_string_cannot_spoof_mock_or_live():
-    with pytest.raises(TypeError, match="ExecutionMode"):
-        make_tool([response()], mode="LIVE")  # type: ignore[arg-type]
+    provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "vendor"))
+    with pytest.raises(TypeError):
+        CoupangReadTool(
+            credential_provider=provider,
+            transport=FakeTransport([response()]),
+            endpoints=(ENDPOINT,),
+            execution_mode="LIVE",  # type: ignore[call-arg]
+        )

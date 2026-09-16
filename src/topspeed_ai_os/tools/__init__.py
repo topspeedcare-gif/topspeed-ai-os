@@ -11,6 +11,13 @@ from .credentials import (
     StaticCredentialProvider,
 )
 from .errors import ToolFailure
+from .http import (
+    LowLevelHttpExecutor,
+    LowLevelHttpRequest,
+    ProductionHttpTransport,
+    UrlLibGetExecutor,
+)
+from .provenance import parse_source_data_as_of
 from .result import (
     ErrorCategory,
     ExecutionMode,
@@ -32,6 +39,9 @@ __all__ = [
     "ExecutionMode",
     "HttpResponse",
     "HttpTransport",
+    "LowLevelHttpExecutor",
+    "LowLevelHttpRequest",
+    "ProductionHttpTransport",
     "ReadTool",
     "RetryPolicy",
     "SensitiveBytes",
@@ -41,5 +51,7 @@ __all__ = [
     "ToolFailure",
     "ToolResult",
     "ToolStatus",
+    "UrlLibGetExecutor",
+    "parse_source_data_as_of",
     "raw_sha256",
 ]

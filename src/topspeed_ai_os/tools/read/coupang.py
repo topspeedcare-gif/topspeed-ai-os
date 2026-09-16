@@ -16,6 +16,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
@@ -23,6 +24,8 @@ from ..base import HttpResponse, HttpTransport, ReadTool
 from ..checksum import raw_sha256
 from ..credentials import CoupangCredentials, CredentialProvider
 from ..errors import ToolFailure
+from ..http import ProductionHttpTransport
+from ..provenance import parse_source_data_as_of
 from ..result import (
     ErrorCategory,
     ExecutionMode,
@@ -48,7 +51,7 @@ class CoupangEndpoint:
     parameter_names: tuple[str, ...]
     allowed_query_names: tuple[str, ...] = ()
     expected_json_type: type = dict
-    verified_live: bool = False
+    data_as_of_path: tuple[str, ...] | None = None
     host: str = COUPANG_API_HOST
 
     def __post_init__(self) -> None:
@@ -72,6 +75,11 @@ class CoupangEndpoint:
             raise ValueError("unsafe allowed query name")
         if set(name.lower() for name in self.allowed_query_names) & _SENSITIVE_QUERY_NAMES:
             raise ValueError("sensitive query names cannot be allowlisted")
+        if self.data_as_of_path is not None and (
+            not self.data_as_of_path
+            or any(not name or not isinstance(name, str) for name in self.data_as_of_path)
+        ):
+            raise ValueError("data_as_of_path must contain explicit response field names")
 
     def build_url(
         self,
@@ -125,6 +133,39 @@ class CoupangEndpoint:
         query_names = {part.partition("=")[0] for part in parsed.query.split("&") if part}
         return query_names.issubset(self.allowed_query_names)
 
+    def extract_data_as_of(self, payload: Any) -> datetime | None:
+        if self.data_as_of_path is None:
+            return None
+        current = payload
+        for index, name in enumerate(self.data_as_of_path):
+            if not isinstance(current, Mapping):
+                raise ToolFailure(
+                    ErrorCategory.MALFORMED_SOURCE,
+                    "Coupang data_as_of path does not match the response",
+                )
+            if name not in current:
+                return None
+            current = current[name]
+            if index < len(self.data_as_of_path) - 1 and current is None:
+                raise ToolFailure(
+                    ErrorCategory.MALFORMED_SOURCE,
+                    "Coupang data_as_of path does not match the response",
+                )
+        try:
+            return parse_source_data_as_of(current)
+        except ValueError as exc:
+            raise ToolFailure(
+                ErrorCategory.MALFORMED_SOURCE,
+                "Coupang data_as_of is invalid",
+            ) from exc
+
+
+_VERIFIED_LIVE_ENDPOINTS: Mapping[str, CoupangEndpoint] = MappingProxyType({})
+
+
+def verified_coupang_operation_count() -> int:
+    return len(_VERIFIED_LIVE_ENDPOINTS)
+
 
 @dataclass(frozen=True, slots=True)
 class CoupangHmacSigner:
@@ -160,28 +201,33 @@ class CoupangReadTool(ReadTool):
         credential_provider: CredentialProvider[CoupangCredentials],
         transport: HttpTransport,
         endpoints: Sequence[CoupangEndpoint],
-        execution_mode: ExecutionMode,
         timeout_seconds: float = 10.0,
         retry_policy: RetryPolicy | None = None,
         clock: Callable[[], datetime] | None = None,
         sleeper: Callable[[float], None] | None = None,
         request_id_factory: Callable[[], str] | None = None,
     ) -> None:
-        super().__init__(
-            tool_name="coupang_read",
-            execution_mode=execution_mode,
-            clock=clock,
-            request_id_factory=request_id_factory,
-        )
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
         endpoint_map = {endpoint.operation: endpoint for endpoint in endpoints}
         if len(endpoint_map) != len(endpoints):
             raise ValueError("duplicate Coupang operation")
-        if execution_mode is ExecutionMode.LIVE and any(
-            not endpoint.verified_live for endpoint in endpoints
-        ):
-            raise ValueError("LIVE mode requires independently verified endpoints")
+        is_production_transport = type(transport) is ProductionHttpTransport
+        mode = transport.execution_mode if is_production_transport else ExecutionMode.MOCK
+        if is_production_transport:
+            if transport.allowed_hosts != frozenset({COUPANG_API_HOST}):
+                raise ValueError("Coupang production transport has an invalid host allowlist")
+            if mode is ExecutionMode.LIVE and any(
+                _VERIFIED_LIVE_ENDPOINTS.get(endpoint.operation) != endpoint
+                for endpoint in endpoints
+            ):
+                raise ValueError("Coupang LIVE mode has no verified operation contract")
+        super().__init__(
+            tool_name="coupang_read",
+            _execution_mode=mode,
+            clock=clock,
+            request_id_factory=request_id_factory,
+        )
         self._credential_provider = credential_provider
         self._transport = transport
         self._endpoints = endpoint_map
@@ -279,12 +325,16 @@ class CoupangReadTool(ReadTool):
                 ),
                 attempts,
             )
+        try:
+            data_as_of = endpoint.extract_data_as_of(parsed)
+        except ToolFailure as source_failure:
+            return self._failure_result(operation, context, source_failure, attempts)
         status = ToolStatus.PARTIAL if response.status_code == 206 else ToolStatus.SUCCESS
         metadata = SourceMetadata(
             source="coupang",
             source_uri=url,
             fetched_at=fetched_at,
-            data_as_of=None,
+            data_as_of=data_as_of,
             checksum_sha256=checksum,
             content_type=response.headers.get("Content-Type"),
             http_status=response.status_code,
