@@ -22,7 +22,11 @@ from urllib.parse import urlencode, urlsplit
 
 from ..base import HttpResponse, HttpTransport, ReadTool
 from ..checksum import raw_sha256
-from ..credentials import CoupangCredentials, CredentialProvider
+from ..credentials import (
+    CoupangCredentials,
+    CredentialProvider,
+    require_valid_coupang_market,
+)
 from ..errors import ToolFailure
 from ..http import ProductionHttpTransport
 from ..provenance import parse_source_data_as_of
@@ -227,6 +231,7 @@ class CoupangHmacSigner:
         url: str,
         credentials: CoupangCredentials,
     ) -> dict[str, str]:
+        market = require_valid_coupang_market(credentials.market)
         now = self.clock()
         if now.tzinfo is None or now.utcoffset() is None:
             raise ValueError("signing clock must return a timezone-aware datetime")
@@ -240,7 +245,11 @@ class CoupangHmacSigner:
             f"access-key={credentials.access_key}, signed-date={signed_date}, "
             f"signature={signature}"
         )
-        return {"Authorization": authorization, "X-Requested-By": credentials.vendor_id}
+        return {
+            "Authorization": authorization,
+            "X-Requested-By": credentials.vendor_id,
+            "X-MARKET": market,
+        }
 
 
 class CoupangReadTool(ReadTool):
@@ -306,6 +315,7 @@ class CoupangReadTool(ReadTool):
         try:
             url = endpoint.build_url(parameters, query or {})
             credentials = self._credential_provider.get_credentials()
+            require_valid_coupang_market(credentials.market)
         except ToolFailure as failure:
             return self._failure_result(operation, context, failure, 1)
         except Exception:
@@ -374,6 +384,14 @@ class CoupangReadTool(ReadTool):
                 ),
                 attempts,
             )
+        if endpoint.operation == GET_SELLER_PRODUCT_ENDPOINT.operation:
+            try:
+                _validate_get_seller_product_response(
+                    parsed,
+                    seller_product_id=parameters["sellerProductId"],
+                )
+            except ToolFailure as source_failure:
+                return self._failure_result(operation, context, source_failure, attempts)
         try:
             data_as_of = endpoint.extract_data_as_of(parsed)
         except ToolFailure as source_failure:
@@ -464,4 +482,52 @@ class CoupangReadTool(ReadTool):
             source_metadata=None,
             error=failure.to_error(attempts),
             attempt_count=attempts,
+        )
+
+
+def _validate_get_seller_product_response(
+    payload: Mapping[str, Any],
+    *,
+    seller_product_id: str,
+) -> None:
+    if any(field not in payload for field in ("code", "message", "data")):
+        raise ToolFailure(
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+            "Coupang seller product response is missing a required envelope field",
+        )
+
+    code = payload["code"]
+    if not isinstance(code, str):
+        raise ToolFailure(
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+            "Coupang seller product response code must be a string",
+        )
+    if code != "SUCCESS":
+        raise ToolFailure(
+            ErrorCategory.UPSTREAM_ERROR,
+            "Coupang seller product response reported a non-success code",
+            retryable=False,
+        )
+
+    if not isinstance(payload["message"], str):
+        raise ToolFailure(
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+            "Coupang seller product response message must be a string",
+        )
+
+    data = payload["data"]
+    if not isinstance(data, Mapping):
+        raise ToolFailure(
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+            "Coupang seller product response data must be an object",
+        )
+    if "sellerProductId" not in data or type(data["sellerProductId"]) is not int:
+        raise ToolFailure(
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+            "Coupang seller product response sellerProductId must be an integer",
+        )
+    if data["sellerProductId"] != int(seller_product_id, 10):
+        raise ToolFailure(
+            ErrorCategory.MALFORMED_SOURCE,
+            "Coupang seller product response does not match the requested product",
         )

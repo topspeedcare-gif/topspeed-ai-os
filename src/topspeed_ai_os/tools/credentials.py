@@ -11,6 +11,16 @@ from .errors import ToolFailure
 from .result import ErrorCategory
 
 CredentialT = TypeVar("CredentialT")
+_COUPANG_MARKETS = frozenset({"KR", "TW"})
+
+
+def require_valid_coupang_market(value: str) -> str:
+    if not isinstance(value, str) or value not in _COUPANG_MARKETS:
+        raise ToolFailure(
+            ErrorCategory.CONFIGURATION,
+            "Coupang market configuration must be exactly KR or TW",
+        )
+    return value
 
 
 class CredentialProvider(Protocol, Generic[CredentialT]):
@@ -22,9 +32,12 @@ class CoupangCredentials:
     access_key: str = field(repr=False)
     secret_key: str = field(repr=False)
     vendor_id: str
+    market: str = "KR"
 
     def __repr__(self) -> str:
-        return f"CoupangCredentials(<redacted>, vendor_id={self.vendor_id!r})"
+        return (
+            f"CoupangCredentials(<redacted>, vendor_id={self.vendor_id!r}, market={self.market!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +65,7 @@ class EnvironmentCoupangCredentialProvider:
     access_key_name: str = "TOPSPEED_COUPANG_ACCESS_KEY"
     secret_key_name: str = "TOPSPEED_COUPANG_SECRET_KEY"
     vendor_id_name: str = "TOPSPEED_COUPANG_VENDOR_ID"
+    market_name: str = "TOPSPEED_COUPANG_MARKET"
 
     def get_credentials(self) -> CoupangCredentials:
         values = [
@@ -64,7 +78,17 @@ class EnvironmentCoupangCredentialProvider:
                 ErrorCategory.CONFIGURATION,
                 "Coupang credentials are not configured",
             )
-        return CoupangCredentials(values[0], values[1], values[2])  # type: ignore[arg-type]
+        market = (
+            "KR"
+            if self.market_name not in self.environment
+            else require_valid_coupang_market(self.environment[self.market_name])
+        )
+        return CoupangCredentials(
+            values[0],
+            values[1],
+            values[2],
+            market,  # type: ignore[arg-type]
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,7 @@ import pytest
 from topspeed_ai_os.core.ids import generate_run_id, generate_task_id
 from topspeed_ai_os.tools import (
     CoupangCredentials,
+    EnvironmentCoupangCredentialProvider,
     ErrorCategory,
     ExecutionMode,
     HttpResponse,
@@ -47,8 +48,8 @@ OFFICIAL_PATH = (
     f"/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/{OFFICIAL_SELLER_PRODUCT_ID}"
 )
 OFFICIAL_URL = f"https://api-gateway.coupang.com{OFFICIAL_PATH}"
-# Synthetic test fixture constrained to the official top-level object contract.
-OFFICIAL_BODY = b'{"code":"SUCCESS","message":"","data":{}}'
+# Synthetic test fixture constrained to the verified official response contract.
+OFFICIAL_BODY = b'{"code":"SUCCESS","message":"","data":{"sellerProductId":1234567890}}'
 
 
 class FakeTransport:
@@ -124,8 +125,10 @@ def make_tool(outcomes, *, endpoint=ENDPOINT, sleeps=None):
     return tool, provider, transport
 
 
-def make_official_tool(transport):
-    provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR"))
+def make_official_tool(transport, *, provider=None, market="KR"):
+    provider = provider or StaticCredentialProvider(
+        CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR", market)
+    )
     tool = CoupangReadTool(
         credential_provider=provider,
         transport=transport,
@@ -414,6 +417,91 @@ def test_hmac_fixture_is_deterministic():
         "signature=0282304f5da7894627049a0f9a6544358d50c83a7f3148bb14b48675baff4f76"
     )
     assert headers["Authorization"] == expected_authorization
+    assert headers["X-Requested-By"] == "FAKE_VENDOR"
+    assert headers["X-MARKET"] == "KR"
+
+
+@pytest.mark.parametrize(
+    ("configured_market", "expected_market"),
+    [(None, "KR"), ("KR", "KR"), ("TW", "TW")],
+)
+def test_verified_request_uses_default_or_explicit_market_header(
+    configured_market,
+    expected_market,
+):
+    environment = {
+        "TOPSPEED_COUPANG_ACCESS_KEY": FAKE_ACCESS,
+        "TOPSPEED_COUPANG_SECRET_KEY": FAKE_SECRET,
+        "TOPSPEED_COUPANG_VENDOR_ID": "FAKE_VENDOR",
+    }
+    if configured_market is not None:
+        environment["TOPSPEED_COUPANG_MARKET"] = configured_market
+    provider = EnvironmentCoupangCredentialProvider(environment)
+    transport = FakeTransport([official_response()])
+    tool, _provider = make_official_tool(transport, provider=provider)
+
+    result = invoke_official(tool)
+
+    assert result.status is ToolStatus.SUCCESS
+    assert transport.calls[0]["headers"]["X-MARKET"] == expected_market
+    assert transport.calls[0]["headers"]["X-Requested-By"] == "FAKE_VENDOR"
+    assert transport.calls[0]["headers"]["Authorization"].startswith("CEA algorithm=HmacSHA256, ")
+
+
+@pytest.mark.parametrize(
+    "market",
+    [
+        "kr",
+        "tw",
+        "Kr",
+        "Tw",
+        "US",
+        "",
+        " ",
+        " KR",
+        "KR ",
+        "\tKR",
+        "KR\n",
+        "KR\r",
+        "KR\r\nInjected: value",
+        "JP",
+    ],
+)
+def test_invalid_market_fails_closed_before_transport(market):
+    provider = EnvironmentCoupangCredentialProvider(
+        {
+            "TOPSPEED_COUPANG_ACCESS_KEY": FAKE_ACCESS,
+            "TOPSPEED_COUPANG_SECRET_KEY": FAKE_SECRET,
+            "TOPSPEED_COUPANG_VENDOR_ID": "FAKE_VENDOR",
+            "TOPSPEED_COUPANG_MARKET": market,
+        }
+    )
+    transport = FakeTransport([official_response()])
+    tool, _provider = make_official_tool(transport, provider=provider)
+
+    result = invoke_official(tool)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.CONFIGURATION
+    assert transport.calls == []
+
+
+def test_market_header_does_not_change_hmac_signature():
+    signer = CoupangHmacSigner(lambda: NOW)
+    kr_headers = signer.authorization_headers(
+        method="GET",
+        url=OFFICIAL_URL,
+        credentials=CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR", "KR"),
+    )
+    tw_headers = signer.authorization_headers(
+        method="GET",
+        url=OFFICIAL_URL,
+        credentials=CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR", "TW"),
+    )
+
+    assert kr_headers["Authorization"] == tw_headers["Authorization"]
+    assert kr_headers["X-MARKET"] == "KR"
+    assert tw_headers["X-MARKET"] == "TW"
 
 
 def test_verified_signing_target_matches_outbound_path_and_query():
@@ -553,6 +641,103 @@ def test_verified_operation_rejects_malformed_or_non_object_response(body, categ
     result = invoke_official(tool)
     assert result.status is ToolStatus.FAILED
     assert result.error.category is category
+
+
+def test_verified_operation_maps_non_success_envelope_without_retry():
+    body = b'{"code":"ERROR","message":"failed","data":{"sellerProductId":1234567890}}'
+    transport = FakeTransport([official_response(body=body)])
+    tool, _provider = make_official_tool(transport)
+
+    result = invoke_official(tool)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.UPSTREAM_ERROR
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        (
+            b'{"message":"","data":{"sellerProductId":1234567890}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":1,"message":"","data":{"sellerProductId":1234567890}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","data":{"sellerProductId":1234567890}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":null,"data":{"sellerProductId":1234567890}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":""}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":null}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":[]}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{"sellerProductId":null}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{"sellerProductId":true}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{"sellerProductId":1234567890.0}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{"sellerProductId":"1234567890"}}',
+            ErrorCategory.SOURCE_SCHEMA_CHANGED,
+        ),
+        (
+            b'{"code":"SUCCESS","message":"","data":{"sellerProductId":1234567891}}',
+            ErrorCategory.MALFORMED_SOURCE,
+        ),
+    ],
+)
+def test_verified_operation_rejects_invalid_response_envelope(body, category):
+    transport = FakeTransport([official_response(body=body)])
+    tool, _provider = make_official_tool(transport)
+
+    result = invoke_official(tool)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is category
+    assert result.attempt_count == 1
+    assert len(transport.calls) == 1
+
+
+def test_verified_operation_accepts_matching_numeric_product_identity():
+    transport = FakeTransport([official_response()])
+    tool, _provider = make_official_tool(transport)
+
+    result = invoke_official(tool)
+
+    assert result.status is ToolStatus.SUCCESS
+    assert result.parsed_result == {
+        "code": "SUCCESS",
+        "message": "",
+        "data": {"sellerProductId": 1234567890},
+    }
 
 
 def test_verified_response_preserves_provenance_ids_checksum_and_redaction():
