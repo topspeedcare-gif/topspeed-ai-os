@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -11,6 +14,7 @@ from topspeed_ai_os.tools import (
     ErrorCategory,
     ExecutionMode,
     HttpResponse,
+    LowLevelHttpRequest,
     ProductionHttpTransport,
     RetryPolicy,
     StaticCredentialProvider,
@@ -24,6 +28,8 @@ from topspeed_ai_os.tools.read import (
     CoupangReadTool,
     verified_coupang_operation_count,
 )
+from topspeed_ai_os.tools.read import coupang as coupang_module
+from topspeed_ai_os.tools.read.coupang import GET_SELLER_PRODUCT_ENDPOINT
 
 NOW = datetime(2026, 9, 16, 0, 0, tzinfo=UTC)
 REQUEST_ID = "req_" + ("b" * 32)
@@ -35,6 +41,14 @@ ENDPOINT = CoupangEndpoint(
     parameter_names=("resource_id",),
     allowed_query_names=("page",),
 )
+OFFICIAL_OPERATION = "coupang.get_seller_product"
+OFFICIAL_SELLER_PRODUCT_ID = "1234567890"
+OFFICIAL_PATH = (
+    f"/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/{OFFICIAL_SELLER_PRODUCT_ID}"
+)
+OFFICIAL_URL = f"https://api-gateway.coupang.com{OFFICIAL_PATH}"
+# Synthetic test fixture constrained to the official top-level object contract.
+OFFICIAL_BODY = b'{"code":"SUCCESS","message":"","data":{}}'
 
 
 class FakeTransport:
@@ -66,12 +80,31 @@ class FakeTransport:
         return outcome
 
 
+class RecordingExecutor:
+    def __init__(self, outcome: HttpResponse):
+        self.outcome = outcome
+        self.requests: list[LowLevelHttpRequest] = []
+
+    def execute(self, request: LowLevelHttpRequest) -> HttpResponse:
+        self.requests.append(request)
+        return self.outcome
+
+
 def response(status=200, body=b'{"items":[]}', url=None, headers=None):
     return HttpResponse(
         status,
         headers or {"Content-Type": "application/json"},
         body,
         url or "https://api-gateway.coupang.com/mock/read/abc?page=1",
+    )
+
+
+def official_response(status=200, body=OFFICIAL_BODY):
+    return HttpResponse(
+        status,
+        {"Content-Type": "application/json"},
+        body,
+        OFFICIAL_URL,
     )
 
 
@@ -91,11 +124,33 @@ def make_tool(outcomes, *, endpoint=ENDPOINT, sleeps=None):
     return tool, provider, transport
 
 
+def make_official_tool(transport):
+    provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "FAKE_VENDOR"))
+    tool = CoupangReadTool(
+        credential_provider=provider,
+        transport=transport,
+        endpoints=(GET_SELLER_PRODUCT_ENDPOINT,),
+        clock=lambda: NOW,
+        request_id_factory=lambda: REQUEST_ID,
+    )
+    return tool, provider
+
+
 def invoke(tool, **overrides):
     kwargs = {
         "operation": "coupang.get_resource",
         "parameters": {"resource_id": "abc"},
         "query": {"page": "1"},
+    }
+    kwargs.update(overrides)
+    return tool.read(**kwargs)
+
+
+def invoke_official(tool, **overrides):
+    kwargs = {
+        "operation": OFFICIAL_OPERATION,
+        "parameters": {"sellerProductId": OFFICIAL_SELLER_PRODUCT_ID},
+        "query": {},
     }
     kwargs.update(overrides)
     return tool.read(**kwargs)
@@ -220,6 +275,65 @@ def test_exact_host_and_redirect_destination_are_enforced():
     assert len(transport.calls) == 1
 
 
+def test_verified_registry_contains_exactly_one_immutable_official_operation():
+    registry = coupang_module._VERIFIED_LIVE_ENDPOINTS
+    assert verified_coupang_operation_count() == 1
+    assert tuple(registry) == (OFFICIAL_OPERATION,)
+    assert registry[OFFICIAL_OPERATION] is GET_SELLER_PRODUCT_ENDPOINT
+    with pytest.raises(TypeError):
+        registry["coupang.runtime_registration"] = ENDPOINT
+
+
+def test_verified_operation_matches_official_contract():
+    endpoint = GET_SELLER_PRODUCT_ENDPOINT
+    assert endpoint.host == "api-gateway.coupang.com"
+    assert endpoint.path_template == (
+        "/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/{sellerProductId}"
+    )
+    assert endpoint.parameter_names == ("sellerProductId",)
+    assert endpoint.numeric_parameter_names == ("sellerProductId",)
+    assert endpoint.allowed_query_names == ()
+    assert endpoint.success_status_codes == (200,)
+    assert endpoint.expected_json_type is dict
+    assert endpoint.data_as_of_path is None
+    assert endpoint.build_url({"sellerProductId": OFFICIAL_SELLER_PRODUCT_ID}, {}) == OFFICIAL_URL
+
+
+@pytest.mark.parametrize(
+    "seller_product_id",
+    ["../secret", "%2e%2e", "123/456", "https://evil.example", "123\\456", "abc"],
+)
+def test_verified_operation_rejects_non_numeric_or_injected_resource_id(
+    seller_product_id,
+):
+    transport = FakeTransport([official_response()])
+    tool, provider = make_official_tool(transport)
+    result = invoke_official(
+        tool,
+        parameters={"sellerProductId": seller_product_id},
+    )
+    assert result.error.category is ErrorCategory.NOT_ALLOWLISTED
+    assert provider.call_count == 0
+    assert transport.calls == []
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["?unknown=1", "?unknown=1&unknown=2", "?%75nknown=1", "?=1", "?&"],
+)
+def test_verified_operation_rejects_arbitrary_or_malformed_query(suffix):
+    assert not GET_SELLER_PRODUCT_ENDPOINT.allows_url(f"{OFFICIAL_URL}{suffix}")
+
+
+def test_verified_operation_rejects_caller_query_before_credentials():
+    transport = FakeTransport([official_response()])
+    tool, provider = make_official_tool(transport)
+    result = invoke_official(tool, query={"unknown": "1"})
+    assert result.error.category is ErrorCategory.NOT_ALLOWLISTED
+    assert provider.call_count == 0
+    assert transport.calls == []
+
+
 def test_unverified_endpoint_cannot_be_used_in_live_mode():
     provider = StaticCredentialProvider(CoupangCredentials(FAKE_ACCESS, FAKE_SECRET, "vendor"))
     with pytest.raises(TypeError):
@@ -252,7 +366,38 @@ def test_production_transport_cannot_register_arbitrary_live_endpoint():
             transport=transport,
             endpoints=(ENDPOINT,),
         )
-    assert verified_coupang_operation_count() == 0
+    assert verified_coupang_operation_count() == 1
+
+
+def test_verified_endpoint_with_default_production_executor_is_live_capable():
+    transport = ProductionHttpTransport(
+        allowed_hosts=frozenset({"api-gateway.coupang.com"}),
+    )
+    tool, _provider = make_official_tool(transport)
+    assert tool.execution_mode is ExecutionMode.LIVE
+
+
+def test_verified_endpoint_with_recording_executor_is_mock_and_get_only():
+    executor = RecordingExecutor(official_response())
+    transport = ProductionHttpTransport(
+        allowed_hosts=frozenset({"api-gateway.coupang.com"}),
+        executor=executor,
+    )
+    tool, _provider = make_official_tool(transport)
+    result = invoke_official(tool)
+    assert tool.execution_mode is ExecutionMode.MOCK
+    assert result.execution_mode is ExecutionMode.MOCK
+    assert result.status is ToolStatus.SUCCESS
+    assert len(executor.requests) == 1
+    assert executor.requests[0].method == "GET"
+    assert executor.requests[0].url == OFFICIAL_URL
+    assert executor.requests[0].follow_redirects is False
+
+
+def test_verified_endpoint_with_fake_transport_cannot_be_live():
+    transport = FakeTransport([official_response()])
+    tool, _provider = make_official_tool(transport)
+    assert tool.execution_mode is ExecutionMode.MOCK
 
 
 def test_hmac_fixture_is_deterministic():
@@ -269,6 +414,25 @@ def test_hmac_fixture_is_deterministic():
         "signature=0282304f5da7894627049a0f9a6544358d50c83a7f3148bb14b48675baff4f76"
     )
     assert headers["Authorization"] == expected_authorization
+
+
+def test_verified_signing_target_matches_outbound_path_and_query():
+    executor = RecordingExecutor(official_response())
+    transport = ProductionHttpTransport(
+        allowed_hosts=frozenset({"api-gateway.coupang.com"}),
+        executor=executor,
+    )
+    tool, _provider = make_official_tool(transport)
+    result = invoke_official(tool)
+    assert result.status is ToolStatus.SUCCESS
+
+    request = executor.requests[0]
+    parsed = urlsplit(request.url)
+    assert parsed.path == OFFICIAL_PATH
+    assert parsed.query == ""
+    signing_target = f"260916T000000ZGET{parsed.path}{parsed.query}".encode()
+    expected_signature = hmac.new(FAKE_SECRET.encode(), signing_target, hashlib.sha256).hexdigest()
+    assert f"signature={expected_signature}" in request.headers["Authorization"]
 
 
 class MissingCredentialProvider:
@@ -365,6 +529,50 @@ def test_malformed_json_and_schema_drift_are_distinct():
     drift_tool, _, _ = make_tool([response(body=b"[]")])
     assert invoke(malformed_tool).error.category is ErrorCategory.MALFORMED_SOURCE
     assert invoke(drift_tool).error.category is ErrorCategory.SOURCE_SCHEMA_CHANGED
+
+
+def test_verified_operation_accepts_only_documented_success_status():
+    transport = FakeTransport([official_response(status=206)])
+    tool, _provider = make_official_tool(transport)
+    result = invoke_official(tool)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.UPSTREAM_ERROR
+    assert result.error.http_status == 206
+
+
+@pytest.mark.parametrize(
+    ("body", "category"),
+    [
+        (b"not-json", ErrorCategory.MALFORMED_SOURCE),
+        (b"[]", ErrorCategory.SOURCE_SCHEMA_CHANGED),
+    ],
+)
+def test_verified_operation_rejects_malformed_or_non_object_response(body, category):
+    transport = FakeTransport([official_response(body=body)])
+    tool, _provider = make_official_tool(transport)
+    result = invoke_official(tool)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is category
+
+
+def test_verified_response_preserves_provenance_ids_checksum_and_redaction():
+    task_id = generate_task_id()
+    run_id = generate_run_id()
+    transport = FakeTransport([official_response()])
+    tool, _provider = make_official_tool(transport)
+    result = invoke_official(tool, task_id=task_id, run_id=run_id)
+    assert result.status is ToolStatus.SUCCESS
+    assert result.request_id == REQUEST_ID
+    assert result.task_id == task_id
+    assert result.run_id == run_id
+    assert result.source_metadata.source_uri == OFFICIAL_URL
+    assert result.source_metadata.checksum_sha256 == raw_sha256(OFFICIAL_BODY)
+    assert result.source_metadata.fetched_at == NOW
+    assert result.source_metadata.data_as_of is None
+    rendered = repr(result)
+    assert FAKE_SECRET not in rendered
+    assert FAKE_ACCESS not in rendered
+    assert OFFICIAL_BODY.decode() not in rendered
 
 
 def test_partial_response_is_not_reported_as_success():

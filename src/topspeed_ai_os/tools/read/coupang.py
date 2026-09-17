@@ -1,8 +1,8 @@
 """Allowlisted, GET-only Coupang Source reader.
 
-No live endpoint is registered by default. A composition root may supply an endpoint
-only after that operation has been independently verified. Unit tests use unverified
-endpoints in MOCK mode.
+Only module-owned endpoint contracts that were independently verified against official
+Coupang documentation may run with LIVE executor provenance. Unit tests use injected
+executors or unverified endpoints in MOCK mode and never perform network I/O.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from ..retry import RetryPolicy, run_with_retry
 
 COUPANG_API_HOST = "api-gateway.coupang.com"
 _SAFE_PARAMETER = re.compile(r"^[A-Za-z0-9._~-]+$")
+_SAFE_NUMBER = re.compile(r"^[0-9]+$")
 _PLACEHOLDER = re.compile(r"{([A-Za-z][A-Za-z0-9_]*)}")
 _SENSITIVE_QUERY_NAMES = frozenset(
     {"access_token", "token", "authorization", "signature", "secret", "refresh_token"}
@@ -53,6 +54,8 @@ class CoupangEndpoint:
     expected_json_type: type = dict
     data_as_of_path: tuple[str, ...] | None = None
     host: str = COUPANG_API_HOST
+    numeric_parameter_names: tuple[str, ...] = ()
+    success_status_codes: tuple[int, ...] = (200, 206)
 
     def __post_init__(self) -> None:
         if not self.operation.startswith("coupang.") or "://" in self.operation:
@@ -69,12 +72,25 @@ class CoupangEndpoint:
         placeholders = tuple(_PLACEHOLDER.findall(self.path_template))
         if placeholders != self.parameter_names or len(set(placeholders)) != len(placeholders):
             raise ValueError("parameter_names must exactly match unique path placeholders")
+        if len(set(self.numeric_parameter_names)) != len(self.numeric_parameter_names) or not set(
+            self.numeric_parameter_names
+        ).issubset(self.parameter_names):
+            raise ValueError("numeric_parameter_names must be unique path parameters")
         if len(set(self.allowed_query_names)) != len(self.allowed_query_names):
             raise ValueError("duplicate allowed query name")
         if any(_SAFE_PARAMETER.fullmatch(name) is None for name in self.allowed_query_names):
             raise ValueError("unsafe allowed query name")
         if set(name.lower() for name in self.allowed_query_names) & _SENSITIVE_QUERY_NAMES:
             raise ValueError("sensitive query names cannot be allowlisted")
+        if (
+            not self.success_status_codes
+            or len(set(self.success_status_codes)) != len(self.success_status_codes)
+            or any(
+                not isinstance(status, int) or isinstance(status, bool) or not 100 <= status <= 599
+                for status in self.success_status_codes
+            )
+        ):
+            raise ValueError("success_status_codes must contain unique HTTP status codes")
         if self.data_as_of_path is not None and (
             not self.data_as_of_path
             or any(not name or not isinstance(name, str) for name in self.data_as_of_path)
@@ -94,7 +110,8 @@ class CoupangEndpoint:
         path = self.path_template
         for name in self.parameter_names:
             value = parameters[name]
-            if not isinstance(value, str) or _SAFE_PARAMETER.fullmatch(value) is None:
+            pattern = _SAFE_NUMBER if name in self.numeric_parameter_names else _SAFE_PARAMETER
+            if not isinstance(value, str) or pattern.fullmatch(value) is None:
                 raise ToolFailure(
                     ErrorCategory.NOT_ALLOWLISTED, "Unsafe Coupang resource identifier"
                 )
@@ -127,11 +144,26 @@ class CoupangEndpoint:
             return False
         pattern = re.escape(self.path_template)
         for name in self.parameter_names:
-            pattern = pattern.replace(re.escape(f"{{{name}}}"), _SAFE_PARAMETER.pattern[1:-1])
+            value_pattern = (
+                _SAFE_NUMBER.pattern[1:-1]
+                if name in self.numeric_parameter_names
+                else _SAFE_PARAMETER.pattern[1:-1]
+            )
+            pattern = pattern.replace(re.escape(f"{{{name}}}"), value_pattern)
         if re.fullmatch(pattern, parsed.path) is None:
             return False
-        query_names = {part.partition("=")[0] for part in parsed.query.split("&") if part}
-        return query_names.issubset(self.allowed_query_names)
+        if not parsed.query:
+            return True
+        query_parts = parsed.query.split("&")
+        if any(not part or part.count("=") != 1 or "%" in part for part in query_parts):
+            return False
+        query_items = [part.split("=", 1) for part in query_parts]
+        query_names = [name for name, _value in query_items]
+        if len(set(query_names)) != len(query_names):
+            return False
+        return set(query_names).issubset(self.allowed_query_names) and all(
+            _SAFE_PARAMETER.fullmatch(value) is not None for _name, value in query_items
+        )
 
     def extract_data_as_of(self, payload: Any) -> datetime | None:
         if self.data_as_of_path is None:
@@ -160,7 +192,24 @@ class CoupangEndpoint:
             ) from exc
 
 
-_VERIFIED_LIVE_ENDPOINTS: Mapping[str, CoupangEndpoint] = MappingProxyType({})
+# Official contract source:
+# 상품 조회 — https://developers.coupang.com/ko/api/products/querying-product
+# HMAC 인증 — https://developers.coupang.com/ko/getting-started/open-api-test-guide
+# Verified: 2026-09-17
+GET_SELLER_PRODUCT_ENDPOINT = CoupangEndpoint(
+    operation="coupang.get_seller_product",
+    path_template="/v2/providers/seller_api/apis/api/v1/marketplace/seller-products/{sellerProductId}",
+    parameter_names=("sellerProductId",),
+    numeric_parameter_names=("sellerProductId",),
+    allowed_query_names=(),
+    success_status_codes=(200,),
+    expected_json_type=dict,
+    data_as_of_path=None,
+)
+
+_VERIFIED_LIVE_ENDPOINTS: Mapping[str, CoupangEndpoint] = MappingProxyType(
+    {GET_SELLER_PRODUCT_ENDPOINT.operation: GET_SELLER_PRODUCT_ENDPOINT}
+)
 
 
 def verified_coupang_operation_count() -> int:
@@ -292,7 +341,7 @@ class CoupangReadTool(ReadTool):
                     ErrorCategory.UNKNOWN,
                     "Coupang read failed unexpectedly",
                 ) from exc
-            self._raise_for_status(response)
+            self._raise_for_status(response, endpoint.success_status_codes)
             if not endpoint.allows_url(response.url):
                 raise ToolFailure(
                     ErrorCategory.NOT_ALLOWLISTED,
@@ -354,9 +403,9 @@ class CoupangReadTool(ReadTool):
         )
 
     @staticmethod
-    def _raise_for_status(response: HttpResponse) -> None:
+    def _raise_for_status(response: HttpResponse, success_status_codes: tuple[int, ...]) -> None:
         status = response.status_code
-        if status in {200, 206}:
+        if status in success_status_codes:
             return
         if status == 401:
             raise ToolFailure(
