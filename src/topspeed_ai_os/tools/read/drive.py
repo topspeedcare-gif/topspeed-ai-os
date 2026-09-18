@@ -33,6 +33,11 @@ DRIVE_METADATA_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.metadata.
 DRIVE_API_HOST = "www.googleapis.com"
 _ALLOWED_SCOPES = frozenset({DRIVE_READONLY_SCOPE, DRIVE_METADATA_READONLY_SCOPE})
 _FILE_ID = re.compile(r"^[A-Za-z0-9_-]+$")
+_RFC3339_DATETIME = re.compile(
+    r"^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])"
+    r"[Tt](?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?"
+    r"(?:[Zz]|[+-](?:[01]\d|2[0-3]):[0-5]\d)$"
+)
 _EXPORT_FORMATS = {
     "pdf": "application/pdf",
     "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -103,9 +108,12 @@ class ProductionDriveClient:
             access_token,
             timeout_seconds,
         )
+        metadata = self._decode_metadata(response.body) if response.status_code == 200 else {}
+        if response.status_code == 200:
+            _validate_drive_metadata(metadata, expected_file_id=file_id)
         return DriveResponse(
             raw_bytes=response.body,
-            metadata=self._decode_metadata(response.body) if response.status_code == 200 else {},
+            metadata=metadata,
             content_type=response.headers.get("Content-Type"),
             http_status=response.status_code,
             headers=response.headers,
@@ -197,6 +205,41 @@ class ProductionDriveClient:
 
     def __repr__(self) -> str:
         return "ProductionDriveClient(<redacted transport>)"
+
+
+def _validate_drive_metadata(
+    metadata: Mapping[str, Any],
+    *,
+    expected_file_id: str,
+) -> None:
+    if not isinstance(metadata, Mapping):
+        raise ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive metadata is malformed")
+
+    for field_name in ("id", "name", "mimeType", "modifiedTime"):
+        if field_name not in metadata or type(metadata[field_name]) is not str:
+            raise ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive metadata is malformed")
+
+    if metadata["id"] != expected_file_id:
+        raise ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive metadata identity is invalid")
+
+    modified_time = metadata["modifiedTime"]
+    if _RFC3339_DATETIME.fullmatch(modified_time) is None:
+        raise ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive modifiedTime is invalid")
+
+    normalized = modified_time
+    if normalized[10] == "t":
+        normalized = f"{normalized[:10]}T{normalized[11:]}"
+    if normalized[-1] in {"Z", "z"}:
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ToolFailure(
+            ErrorCategory.MALFORMED_SOURCE,
+            "Drive modifiedTime is invalid",
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive modifiedTime is invalid")
 
 
 class DriveReadTool(ReadTool):
@@ -294,6 +337,7 @@ class DriveReadTool(ReadTool):
                         timeout_seconds=self._timeout_seconds,
                     )
                 self._raise_for_status(response)
+                _validate_drive_metadata(response.metadata, expected_file_id=file_id)
                 return response
             except ToolFailure:
                 raise
@@ -323,13 +367,6 @@ class DriveReadTool(ReadTool):
             metadata = dict(response.metadata)
         except (TypeError, ValueError):
             metadata = {}
-        if not isinstance(metadata.get("id"), str) or metadata.get("id") != file_id:
-            return self._failed(
-                operation.value,
-                context,
-                ToolFailure(ErrorCategory.MALFORMED_SOURCE, "Drive metadata is malformed"),
-                attempts,
-            )
         if operation is DriveOperation.GET_METADATA and not response.raw_bytes:
             return self._failed(
                 operation.value,

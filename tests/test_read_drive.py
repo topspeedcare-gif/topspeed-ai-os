@@ -33,6 +33,7 @@ METADATA = {
     "mimeType": "application/octet-stream",
     "modifiedTime": "2026-09-15T12:00:00Z",
 }
+MISSING = object()
 
 
 class FakeDriveClient:
@@ -87,6 +88,7 @@ def test_readonly_scope_metadata_read_and_source_metadata():
     assert result.request_id == REQUEST_ID
     assert result.source_metadata.source_uri == f"drive://file/{FILE_ID}"
     assert result.source_metadata.checksum_sha256 == raw_sha256(b'{"id":"safe-file_123"}')
+    assert result.source_metadata.source_specific_metadata == {"name": "source.xlsx"}
     assert result.parsed_result["id"] == FILE_ID
     assert provider.call_count == 1
     assert client.calls[0]["operation"] == "metadata"
@@ -298,6 +300,100 @@ def test_malformed_metadata_is_rejected(metadata):
     tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
     result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
     assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+
+
+@pytest.mark.parametrize("field", ["id", "name", "mimeType", "modifiedTime"])
+@pytest.mark.parametrize(
+    "invalid_value",
+    [MISSING, None, True, 1, 1.5, [], {}],
+    ids=["missing", "none", "bool", "int", "float", "list", "dict"],
+)
+def test_required_metadata_fields_are_fail_closed(field, invalid_value):
+    metadata = dict(METADATA)
+    if invalid_value is MISSING:
+        metadata.pop(field)
+    else:
+        metadata[field] = invalid_value
+    tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+
+
+def test_metadata_id_identity_mismatch_is_non_retryable_failure():
+    metadata = {**METADATA, "id": "different-file"}
+    tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+
+
+@pytest.mark.parametrize(
+    "modified_time",
+    [
+        "2026-09-17T12:34:56Z",
+        "2026-09-17T12:34:56.123Z",
+        "2026-09-17T12:34:56+00:00",
+        "2026-09-17T12:34:56.123+00:00",
+        "2026-09-17T12:34:56+09:00",
+        "2026-09-17t12:34:56z",
+    ],
+)
+def test_valid_modified_time_preserves_original_source_value(modified_time):
+    metadata = {**METADATA, "modifiedTime": modified_time}
+    tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.SUCCESS
+    assert result.source_metadata.modified_time == modified_time
+
+
+@pytest.mark.parametrize(
+    "modified_time",
+    [
+        "2026-09-17",
+        "2026-09-17T12:34:56",
+        "2026-09-17 12:34:56Z",
+        "2026-09-17T12:34:56Z ",
+        " 2026-09-17T12:34:56Z",
+        "2026-02-30T12:34:56Z",
+        "2026-09-17T12:34:56+24:00",
+        "",
+        "20260917T123456Z",
+        "2026-W38-4T12:34:56Z",
+        "2026-09-17T12:34:56,123Z",
+        "2026-09-17T12:34:56+0900",
+    ],
+)
+def test_invalid_modified_time_is_non_retryable_failure(modified_time):
+    metadata = {**METADATA, "modifiedTime": modified_time}
+    tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+
+
+def test_empty_name_and_mime_type_are_not_given_new_business_rules():
+    metadata = {**METADATA, "name": "", "mimeType": ""}
+    tool, _, _ = make_tool([DriveResponse(b"{}", metadata)])
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.SUCCESS
+    assert result.source_metadata.source_specific_metadata == {"name": ""}
 
 
 def test_task_and_run_ids_are_preserved():

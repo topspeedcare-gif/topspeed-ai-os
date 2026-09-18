@@ -32,6 +32,7 @@ METADATA_BODY = (
     b'{"id":"safe-file_123","name":"source.csv",'
     b'"mimeType":"text/csv","modifiedTime":"2026-09-16T00:00:00Z"}'
 )
+MALFORMED_METADATA_BODY = b'{"id":"safe-file_123","name":"source.csv","mimeType":"text/csv"}'
 
 
 class RecordingExecutor:
@@ -51,6 +52,25 @@ def http_response(*, url, status=200, body=b"raw", headers=None):
         body=body,
         url=url,
     )
+
+
+def make_production_drive_tool(responses):
+    executor = RecordingExecutor(responses)
+    transport = ProductionHttpTransport(
+        allowed_hosts=frozenset({DRIVE_API_HOST}),
+        executor=executor,
+    )
+    client = ProductionDriveClient(transport)
+    provider = StaticCredentialProvider(
+        BearerCredentials(FAKE_TOKEN, frozenset({DRIVE_READONLY_SCOPE}))
+    )
+    tool = DriveReadTool(
+        credential_provider=provider,
+        client=client,
+        clock=lambda: NOW,
+        request_id_factory=lambda: REQUEST_ID,
+    )
+    return tool, executor
 
 
 def test_production_http_transport_preserves_get_response_and_security_controls():
@@ -197,6 +217,97 @@ def test_production_drive_public_surface_has_no_write_operation():
     assert public_actions == {"get_metadata", "download_file", "export_file"}
 
 
+def test_production_get_metadata_malformed_schema_stops_after_metadata_get():
+    metadata_url = (
+        f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}"
+        "?fields=id%2Cname%2CmimeType%2CmodifiedTime"
+    )
+    tool, executor = make_production_drive_tool(
+        [http_response(url=metadata_url, body=MALFORMED_METADATA_BODY)]
+    )
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+    assert len(executor.requests) == 1
+    assert executor.requests[0].method == "GET"
+
+
+def test_production_metadata_http_failure_is_not_reclassified_as_schema_failure():
+    metadata_url = (
+        f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}"
+        "?fields=id%2Cname%2CmimeType%2CmodifiedTime"
+    )
+    tool, executor = make_production_drive_tool(
+        [http_response(url=metadata_url, status=404, body=b"not-found")]
+    )
+
+    result = tool.read(operation=DriveOperation.GET_METADATA, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.SOURCE_NOT_FOUND
+    assert result.error.http_status == 404
+    assert result.attempt_count == 1
+    assert len(executor.requests) == 1
+
+
+def test_production_download_malformed_metadata_blocks_content_get():
+    metadata_url = (
+        f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}"
+        "?fields=id%2Cname%2CmimeType%2CmodifiedTime"
+    )
+    download_url = f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}?alt=media"
+    tool, executor = make_production_drive_tool(
+        [
+            http_response(url=metadata_url, body=MALFORMED_METADATA_BODY),
+            http_response(url=download_url, body=b"must-not-be-consumed"),
+        ]
+    )
+
+    result = tool.read(operation=DriveOperation.DOWNLOAD_FILE, file_id=FILE_ID)
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+    assert len(executor.requests) == 1
+    assert len(executor.responses) == 1
+    assert executor.requests[0].method == "GET"
+
+
+def test_production_export_malformed_metadata_blocks_export_get():
+    metadata_url = (
+        f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}"
+        "?fields=id%2Cname%2CmimeType%2CmodifiedTime"
+    )
+    export_url = (
+        f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}/export?mimeType=application%2Fpdf"
+    )
+    tool, executor = make_production_drive_tool(
+        [
+            http_response(url=metadata_url, body=MALFORMED_METADATA_BODY),
+            http_response(url=export_url, body=b"must-not-be-consumed"),
+        ]
+    )
+
+    result = tool.read(
+        operation=DriveOperation.EXPORT_FILE,
+        file_id=FILE_ID,
+        export_format="pdf",
+    )
+
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+    assert result.error.retryable is False
+    assert result.attempt_count == 1
+    assert len(executor.requests) == 1
+    assert len(executor.responses) == 1
+    assert executor.requests[0].method == "GET"
+
+
 def test_production_drive_export_uses_allowlisted_get_url():
     metadata_url = (
         f"https://{DRIVE_API_HOST}/drive/v3/files/{FILE_ID}"
@@ -223,6 +334,7 @@ def test_production_drive_export_uses_allowlisted_get_url():
     )
     assert response.raw_bytes == b"pdf-bytes"
     assert [request.method for request in executor.requests] == ["GET", "GET"]
+    assert [request.follow_redirects for request in executor.requests] == [False, False]
     assert [request.url for request in executor.requests] == [metadata_url, export_url]
 
 
