@@ -2,7 +2,7 @@
 
 DOCUMENT STATUS: DERIVED / NON-NORMATIVE
 
-EVIDENCE CUTOFF: 2026-09-21
+EVIDENCE CUTOFF: 2026-09-22
 
 ## TRUTH PRIORITY
 
@@ -16,9 +16,17 @@ If this document conflicts with repository source, Frozen documents, or exact ev
 
 PHASE 3 — Read-only Tools
 
-Operational verification is not complete.
+PHASE 3 implementation = COMPLETE / PASS
 
-PHASE 4 entry is denied.
+PHASE 3 operational verification = COMPLETE / PASS
+
+PHASE 3 final aggregate audit = PASS
+
+PHASE 3 overall = PASS
+
+PHASE 4 entry = PENDING EXPLICIT GATE
+
+PHASE 4 implementation = NOT STARTED. A separate explicit Gate is required before PHASE 4 entry; PHASE 3 PASS does not authorize it.
 
 ## CANONICAL BRANCH
 
@@ -36,6 +44,8 @@ HANDOFF-only documentation commits are excluded. A later HANDOFF documentation c
 
 Reference baselines:
 
+- Actual branch HEAD at this HANDOFF update: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
+- `origin/audit/phase3-read-only-tools`: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
 - `origin/main`: `f51dde902e1d460f9e55ff41841aa80970ea723f`
 - Architecture Freeze: `b45aa64675bbb903236bdf2a4309d5525b9fcba5`
 
@@ -63,7 +73,7 @@ The current repository and Frozen evidence support the following implementation 
 - GET-only production transport boundary
 - Write-operation prohibition
 
-This section does not establish PHASE 4, LINER Research Provider, a successful operational Drive read, or a successful operational Coupang read.
+PHASE 3 implementation is complete. PHASE 4 implementation and LINER Research Provider implementation have not started.
 
 ## TESTED
 
@@ -83,47 +93,83 @@ Results:
 - Pytest = 681 passed / 0 failed
 - Secret scan = PASS
 
-CI/test PASS does not equal operational LIVE PASS.
+HANDOFF publication commit: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
+
+Publication CI run: `35581694098` = PASS
+
+CI PASS and operational LIVE PASS are separate evidence classes.
 
 ## LIVE VERIFIED
 
-LIVE VERIFIED here means verified production-path execution facts, not successful external data retrieval.
+### Google Drive
 
-Successful external source data retrieval: NONE VERIFIED
+- Evidence date = 2026-09-21
+- Operation = `drive.get_metadata`
+- ExecutionMode = LIVE
+- ToolStatus = SUCCESS
+- HTTP status = 200
+- Tool invocation count = 1
+- Logical GET attempt count = 1
+- `attempt_count` = 1
+- Response identity = PASS
+- `modifiedTime` RFC3339/timezone contract = PASS
+- Checksum recomputation = MATCH
+- `fetched_at` timezone-aware = PASS
+- `data_as_of` = None
+- `task_id` = None
+- `run_id` = None
+- Download calls = 0
+- Export calls = 0
+- Write calls = 0
+- Authentication re-entry = RESOLVED
+- Operational LIVE = PASS
+- Scope evidence = operator-provided issuance evidence
+- Actual token scope independent introspection = NOT PERFORMED
 
-LIVE results are based on operator-provided sanitized execution reports: Coupang dated 2026-09-17 and Google Drive dated 2026-09-18.
-Credentials, secrets, file identifiers, account identifiers, file names, and raw source payloads were intentionally excluded.
-The HANDOFF is a derived state index and is not the underlying LIVE evidence artifact.
-The HANDOFF does not constitute an independent reproduction of the external LIVE requests.
+The scope evidence limitation does not change the current Drive operational PASS.
 
 ### Coupang
 
-- Production request path reached the upstream service.
-- An actual HTTP response was received.
-- Successful source data retrieval was not verified.
+- Evidence date = 2026-09-22
+- Operation = `coupang.get_seller_product`
+- ExecutionMode = LIVE
+- ToolStatus = SUCCESS
+- HTTP status = 200
+- Tool invocation count = 1
+- Logical GET attempt count = 1
+- `attempt_count` = 1
+- Application code = SUCCESS
+- Response schema = PASS
+- `sellerProductId` exact numeric identity = PASS
+- Checksum recomputation = MATCH
+- `fetched_at` timezone-aware = PASS
+- `data_as_of` = None
+- `task_id` = None
+- `run_id` = None
+- Write calls = 0
+- Authentication re-entry = RESOLVED
+- Operational LIVE = PASS
 
-### Google Drive
-
-- Production `drive.get_metadata` path executed in LIVE mode.
-- Tool invocation count = 1.
-- Tool `attempt_count` = 1.
-- An actual HTTP response was received.
-- Successful metadata retrieval was not verified.
+The HANDOFF is a derived state index of the audited sanitized LIVE evidence, not the underlying LIVE evidence artifact or an independent reproduction of the external requests. Credential, identifier, and raw payload values are excluded.
 
 Packet count, socket retransmission count, and OS-level network attempt count are not established. Only Tool invocation count and `attempt_count` are established.
 
-## LIVE FAILED
+## HISTORICAL LIVE FAILURES
 
 ### Coupang
 
-- Operational Read = FAIL
+- Evidence date = 2026-09-17
+- Historical operational read = FAIL
 - HTTP status = 401
 - Classification = AUTHENTICATION
 - Successful source payload = NOT OBTAINED
+- Current meaning = superseded operationally by successful authentication re-entry
+- Exact root cause = NOT INDEPENDENTLY ESTABLISHED
 
 ### Google Drive
 
-- Operational Read = FAIL
+- Evidence date = 2026-09-18
+- Historical operational read = FAIL
 - HTTP status = 401
 - Classification = AUTHENTICATION
 - Retryable = False
@@ -134,6 +180,8 @@ Packet count, socket retransmission count, and OS-level network attempt count ar
 - Write invocation count = 0
 - Successful metadata payload = NOT OBTAINED
 - Environment cleared after execution = YES
+- Current meaning = superseded operationally by successful authentication re-entry
+- Exact root cause = NOT INDEPENDENTLY ESTABLISHED
 
 Drive LIVE execution on 2026-09-18 was performed through the project Python process from the parent PowerShell session.
 
@@ -143,130 +191,86 @@ No credential, token, file ID, file name, raw response, or account identifier is
 
 BLOCKED means an actual source request could not be reached because a prerequisite was unavailable.
 
-- Latest Coupang execution = NOT BLOCKED
-- Latest Drive execution = NOT BLOCKED
+- Current Coupang source = PASS / NOT BLOCKED
+- Current Google Drive source = PASS / NOT BLOCKED
 
-Both reached an actual HTTP response. Therefore, both latest operational runs are classified as FAIL, not BLOCKED.
-
-Future execution is gated pending new authentication evidence. A gated future execution is distinct from a BLOCKED result classification.
+Authentication re-entry for both sources is resolved. No current authentication blocker remains.
 
 ## UNKNOWN / INSUFFICIENT EVIDENCE
 
 - Exact credential/account-side root cause of the Coupang HTTP 401
 - Exact token/authentication-side root cause of the Drive HTTP 401
 - Independently verified actual granted scopes of the Drive access token
-- Successful Coupang response contract under a LIVE 200 response
-- Successful Drive metadata contract under a LIVE 200 response
 - Long-term Drive access-token refresh strategy
 - Whether Coupang and Drive 401 failures share any common cause
 - Root cause of the observed Codex subprocess environment propagation failure
 
-Expired token, wrong account, wrong scope, API configuration, and Codex defect remain unconfirmed possibilities and are not established root causes.
+Expired token, wrong account, wrong scope, API configuration, and Codex defect remain unconfirmed possibilities for the historical failures and are not established root causes. These unknowns do not overturn current operational PASS.
 
 ## KNOWN RISKS
 
 1. `EnvironmentBearerCredentialProvider` consumes an access token but does not provide automatic token refresh.
 2. Manual credential/token transfer can introduce operator input errors.
-3. Repeating the same failed credential without new evidence can create meaningless LIVE retries.
-4. During the 2026-09-18 workstation session, `TOPSPEED_DRIVE_*` variables set by the parent launcher were not visible in a Codex-spawned Python process. The root cause is not established. Latest Drive LIVE evidence was therefore acquired directly through the parent PowerShell and canonical project Python path.
+3. Repeating LIVE calls without a new operational reason can create unnecessary exposure and meaningless evidence.
+4. During the 2026-09-18 workstation session, `TOPSPEED_DRIVE_*` variables set by the parent launcher were not visible in a Codex-spawned Python process. The root cause is not established. Historical 2026-09-18 Drive LIVE evidence was therefore acquired directly through the parent PowerShell and canonical project Python path.
 5. `C:\Dev\TOPSPEED-START.ps1` is operational launcher state outside the repository and is not itself represented by this HANDOFF file.
 6. GitHub Actions produced Node.js deprecation warnings. These warnings did not fail the audited CI run.
 7. The workflow name remains `Phase 2 Contract CI` even though its current verification scope includes later work, creating possible operational naming confusion.
-8. During the 2026-09-21 laptop Evidence Gate, the canonical Python launcher was reported unavailable in that execution context. Root cause is not established. During that Evidence Gate, docs-only UTF-8 validation used a strict .NET UTF-8 decoder. This environment/tooling WARN is separate from the Coupang 2026-09-17 and Google Drive 2026-09-18 operational LIVE HTTP 401 results. It does not change the LIVE classifications, implementation PASS results, PHASE 3 status, or PHASE 4 status.
+8. During the 2026-09-21 laptop Evidence Gate, the canonical Python launcher was reported unavailable in that execution context. Root cause is not established. During that Evidence Gate, docs-only UTF-8 validation used a strict .NET UTF-8 decoder. This environment/tooling WARN is separate from historical HTTP 401 results and current operational LIVE PASS results.
 
-These WARN items do not establish a FAIL beyond the separately recorded results.
+These limitations and risks do not change the current Drive or Coupang operational PASS.
 
 ## RE-ENTRY CONDITIONS
 
-### Google Drive
-
-New evidence is required before another operational call.
-
-Minimum conditions:
-
-- Do not reuse the access token from the failed 401 run.
-- Obtain a newly issued access token immediately before revalidation.
-- Have issuance evidence for `drive.metadata.readonly` scope.
-- Use the intended Google account.
-- Confirm the intended account is expected to have read access to the target file.
-- Reconfirm repository branch.
-- Reconfirm actual Git HEAD.
-- Reconfirm CANONICAL implementation baseline.
-- Reconfirm working tree state.
-- Use `drive.get_metadata` only.
-- Use `RetryPolicy(max_attempts=1)`.
-- Do not download.
-- Do not export.
-- Do not write.
-- Remove process credentials after execution.
-- Perform exactly one revalidation Tool invocation unless new evidence authorizes another run.
-- Confirm that the newly issued token is not expired at execution time.
-- Confirm that the Google Drive API is enabled for the relevant Google Cloud / OAuth context.
-- Revalidate the target file ID format without printing or recording its value.
-
-Operator-reported scope evidence is not the same as independently verified actual token scope.
-
-### Coupang
-
-New credential/account authorization evidence is required.
-
-Minimum conditions:
-
-- Do not repeat the same failed credential solely to retry.
-- Require credential reissue or materially new account/authorization evidence.
-- Reconfirm repository branch.
-- Reconfirm actual Git HEAD.
-- Reconfirm CANONICAL implementation baseline.
-- Reconfirm working tree state.
-- Use a verified read-only GET operation only.
-- Do not perform a write operation.
-- Do not escalate retries.
-- Remove process credentials after execution.
-
-Drive and Coupang re-entry are independent.
+- Google Drive authentication re-entry = RESOLVED
+- Coupang authentication re-entry = RESOLVED
+- No repeated LIVE call without a new operational reason.
+- Future credential rotation or expiry requires a new bounded Source-specific Gate.
+- Any future LIVE remains read-only, fail-closed, and bounded.
+- Reconfirm branch, actual Git HEAD, CANONICAL implementation baseline, and working tree before future execution.
+- Drive and Coupang future Gates remain independent.
+- Operator-provided Drive scope issuance evidence does not constitute independent actual token scope introspection.
 
 ## FORBIDDEN NEXT ACTIONS
 
-- PHASE 4 entry
-- Main merge or main push
+- PHASE 4 implementation before its explicit entry Gate
+- Main merge or main push without separate approval
 - Frozen document modification
-- Signer/parser modification solely because HTTP 401 occurred
-- Schema modification solely because HTTP 401 occurred
-- Repeated use of the failed Drive token
-- Repeated use of failed Coupang credential without new evidence
-- Increasing retry count to overcome authentication failure
-- Drive download LIVE
-- Drive export LIVE
-- Any Drive write LIVE
-- Any Coupang write LIVE
-- Credential, token, file ID, or raw payload in repository docs or logs
+- Unapproved write
+- Repeat Drive or Coupang LIVE without a new operational reason
+- Credential, identifier, or raw payload values in repository docs or logs
 - Mock success represented as operational LIVE PASS
-- LINER implementation
+- LINER implementation in the current scope
 - Unrelated dependency addition
 
 ## NEXT GATE
 
-Source-specific authentication remediation → new evidence review → one-shot read-only LIVE revalidation → independent audit
+1. PHASE 3 aggregate HANDOFF update
+2. Independent HANDOFF publication audit
+3. Docs-only publication
+4. PHASE 4 explicit entry Gate
 
-Drive and Coupang are re-entered independently.
-
-PHASE 3 completion can be reconsidered only after required operational LIVE reads succeed and their response contracts are independently audited.
-
-PHASE 3 completion does not automatically authorize PHASE 4. PHASE 4 requires its own explicit gate.
+PHASE 3 overall = PASS. PHASE 4 entry = PENDING EXPLICIT GATE; PHASE 4 implementation = NOT STARTED.
 
 ## LAST AUDIT RESULT
 
-- Drive metadata hardening implementation = PASS
-- Drive hardening CI = PASS
-- Drive operational LIVE read = FAIL — AUTHENTICATION / HTTP 401
+- Drive implementation = PASS
+- Drive CI = PASS
+- Drive operational LIVE = PASS
+- Drive response contract LIVE validation = PASS
+- Drive authentication re-entry = RESOLVED
 - Coupang implementation contract = PASS
-- Coupang operational LIVE read = FAIL — AUTHENTICATION / HTTP 401
-- Current PHASE 3 read-tool implementation baseline under the audited scope = PASS
-- PHASE 3 operational verification = FAIL / NOT COMPLETE
-- PHASE 3 overall = FAIL
-- PHASE 4 entry = DENIED
+- Coupang operational LIVE = PASS
+- Coupang response contract LIVE validation = PASS
+- Coupang authentication re-entry = RESOLVED
+- PHASE 3 implementation baseline = PASS
+- PHASE 3 operational verification = PASS
+- PHASE 3 final aggregate audit = PASS
+- PHASE 3 overall = PASS
+- PHASE 4 entry = PENDING EXPLICIT GATE
+- PHASE 4 implementation = NOT STARTED
 
-Implementation baseline PASS does not mean PHASE 3 is complete.
+PHASE 3 PASS does not authorize PHASE 4 entry.
 
 ## OPERATING RULES
 
