@@ -1,13 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from topspeed_ai_os.core.ids import generate_run_id
 from topspeed_ai_os.data_hub import (
+    BatchResult,
     BatchStatus,
     InMemoryReferencePublisher,
+    MappingEntry,
     ReasonCode,
     ingest_ad_daily,
 )
@@ -23,8 +24,8 @@ from topspeed_ai_os.tools.result import (
     ToolStatus,
 )
 
-NOW = datetime(2026, 9, 22, 12, 0, tzinfo=datetime.now().astimezone().tzinfo)
-RUN = generate_run_id()
+NOW = datetime(2026, 9, 22, 12, 0, tzinfo=timezone(timedelta(hours=9)))
+RUN = "run_00000000000000000000000000"
 HEADERS = (
     "channel",
     "stat_date",
@@ -57,7 +58,16 @@ ROW = (
 )
 
 
-def tool_result(rows=(ROW,), *, raw=b"synthetic-row", status=ToolStatus.SUCCESS, parsed=None):
+def tool_result(
+    rows=(ROW,),
+    *,
+    raw=b"synthetic-row",
+    status=ToolStatus.SUCCESS,
+    parsed=None,
+    tool_run_id=RUN,
+    source_metadata=None,
+    raw_result=None,
+):
     parsed = TabularData(HEADERS, tuple(rows), None) if parsed is None else parsed
     error = (
         ToolError(ErrorCategory.MALFORMED_SOURCE, "synthetic failure", False)
@@ -71,31 +81,34 @@ def tool_result(rows=(ROW,), *, raw=b"synthetic-row", status=ToolStatus.SUCCESS,
         status=status,
         execution_mode=ExecutionMode.MOCK,
         task_id=None,
-        run_id=RUN,
-        source_metadata=SourceMetadata(
+        run_id=tool_run_id,
+        source_metadata=source_metadata
+        or SourceMetadata(
             source="tabular_file",
             source_uri="csv://synthetic/ad-daily.csv",
             fetched_at=NOW,
             data_as_of=None,
             checksum_sha256=raw_sha256(raw),
         ),
-        raw_result=SensitiveBytes(raw),
+        raw_result=SensitiveBytes(raw) if raw_result is None else raw_result,
         parsed_result=parsed,
         error=error,
     )
 
 
 def ingest(result, **kwargs):
+    run_id = kwargs.pop("run_id", RUN)
+    clock = kwargs.pop("clock", lambda: NOW)
     mapping = kwargs.pop(
         "sku_mapping",
         {("tabular_file", "external_product_id", "ext-001"): "TS-SYNTH-001"},
     )
     return ingest_ad_daily(
         result,
-        run_id=RUN,
+        run_id=run_id,
         known_skus={"TS-SYNTH-001"},
         sku_mapping=mapping,
-        clock=lambda: NOW,
+        clock=clock,
         **kwargs,
     )
 
@@ -159,6 +172,133 @@ def test_business_duplicate_and_conflict_are_separate():
     )
     assert conflict.status is BatchStatus.CONFLICT
     assert conflict.publish_eligible is False
+
+
+def test_different_checksum_same_business_is_duplicate_and_changed_facts_conflict():
+    first = ingest(tool_result())
+    duplicate = ingest(tool_result(raw=b"another-file"), existing=first.accepted)
+    assert duplicate.status is BatchStatus.DUPLICATE
+    assert duplicate.duplicates[0].duplicate_reason is ReasonCode.BUSINESS_DUPLICATE
+    changed = list(ROW)
+    changed[7] = "3"
+    conflict = ingest(tool_result((tuple(changed),), raw=b"third-file"), existing=first.accepted)
+    assert conflict.conflicts[0].conflict_reason is ReasonCode.NATURAL_KEY_CONFLICT
+
+
+def test_run_and_created_at_differences_do_not_create_business_conflict():
+    first = ingest(tool_result())
+    same_business = ingest(
+        tool_result(raw=b"new-provenance", tool_run_id="run_11111111111111111111111111"),
+        existing=first.accepted,
+        run_id="run_11111111111111111111111111",
+        clock=lambda: datetime(2026, 9, 23, 12, 0, tzinfo=NOW.tzinfo),
+    )
+    assert same_business.status is BatchStatus.DUPLICATE
+    assert same_business.duplicates[0].duplicate_reason is ReasonCode.BUSINESS_DUPLICATE
+
+
+def test_conflict_batch_leaves_publisher_current_unchanged():
+    first = ingest(tool_result())
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(first)
+    changed = list(ROW)
+    changed[7] = "9"
+    conflict = ingest(tool_result((tuple(changed),), raw=b"conflict"), existing=first.accepted)
+    assert conflict.status is BatchStatus.CONFLICT
+    assert publisher.publish(conflict) is False
+    assert publisher.current == first.accepted
+
+
+def test_source_duplicate_uses_any_matching_published_ingestion_identity():
+    first = ingest(tool_result())
+    unrelated = ingest(tool_result(raw=b"unrelated"), sku_mapping={"ext-001": "TS-SYNTH-001"})
+    result = ingest(tool_result(), existing=(*unrelated.accepted, *first.accepted))
+    assert result.status is BatchStatus.DUPLICATE
+    assert result.batch_reason is ReasonCode.SOURCE_DUPLICATE
+
+
+def test_changed_mapping_fingerprint_reprocesses_same_checksum():
+    first = ingest(tool_result())
+    result = ingest(
+        tool_result(),
+        existing=first.accepted,
+        sku_mapping={
+            ("tabular_file", "external_product_id", "ext-001"): "TS-SYNTH-001",
+            ("other", "external_product_id", "ext-002"): "TS-SYNTH-001",
+        },
+    )
+    assert result.status is BatchStatus.DUPLICATE
+    assert result.batch_reason is None
+    assert result.duplicates[0].duplicate_reason is ReasonCode.BUSINESS_DUPLICATE
+
+
+def test_run_mismatch_and_runtime_boundary_types_fail_closed():
+    mismatch = ingest(tool_result(tool_run_id="run_11111111111111111111111111"))
+    assert mismatch.batch_reason is ReasonCode.INVALID_TOOL_RESULT
+    bad_raw = ingest(tool_result(raw_result=object()))
+    assert bad_raw.batch_reason is ReasonCode.INVALID_TOOL_RESULT
+    bad_metadata = ingest(tool_result(source_metadata=object()))
+    assert bad_metadata.batch_reason is ReasonCode.INVALID_TOOL_RESULT
+
+
+def test_mapping_boundary_and_sku_reason_codes():
+    invalid = ingest(tool_result(), sku_mapping=[object()])
+    assert invalid.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+    ambiguous = ingest(
+        tool_result(),
+        sku_mapping=[
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001"),
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-OTHER-002"),
+        ],
+    )
+    assert ambiguous.rejected[0].reason_code is ReasonCode.AMBIGUOUS_SKU
+    unknown = ingest(tool_result(), sku_mapping={"other-id": "TS-SYNTH-001"})
+    assert unknown.rejected[0].reason_code is ReasonCode.UNKNOWN_SKU
+    missing = ingest(tool_result(((*ROW[:2], "", *ROW[3:]),)))
+    assert missing.rejected[0].reason_code is ReasonCode.MISSING_SKU_MAPPING_KEY
+
+
+def test_normalization_provenance_records_only_real_transformations():
+    result = ingest(tool_result())
+    rules = result.accepted[0].provenance.normalization_rules_applied
+    assert "blank_ad_group_id_to_none" in rules
+    assert "blank_campaign_name_to_none" not in rules
+    assert "blank_ad_units_to_none" not in rules
+
+
+def test_publisher_merges_current_and_rejects_malformed_results():
+    first = ingest(tool_result())
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(first)
+    row_b = list(ROW)
+    row_b[2] = "ext-002"
+    row_b[3] = "cmp-2"
+    second = ingest(
+        tool_result((ROW, tuple(row_b)), raw=b"batch-ab"),
+        sku_mapping={
+            ("tabular_file", "external_product_id", "ext-001"): "TS-SYNTH-001",
+            ("tabular_file", "external_product_id", "ext-002"): "TS-SYNTH-001",
+        },
+    )
+    assert publisher.publish(second)
+    assert len(publisher.current or ()) == 2
+    malformed = BatchResult(
+        "bad",
+        BatchStatus.PARTIAL,
+        accepted=second.accepted,
+        rejected=second.rejected,
+        publish_eligible=True,
+    )
+    assert publisher.publish(malformed) is False
+    assert len(publisher.current or ()) == 2
+
+
+def test_partial_failure_preserves_accepted_and_rejected_evidence():
+    result = ingest(tool_result((ROW, ROW[:-1]), raw=b"partial"))
+    assert result.status is BatchStatus.PARTIAL
+    assert len(result.accepted) == 1
+    assert len(result.rejected) == 1
+    assert result.publish_eligible is False
 
 
 def test_mapping_fingerprint_allows_reprocessing_and_publisher_is_fail_closed():

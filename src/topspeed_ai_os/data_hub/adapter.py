@@ -20,7 +20,7 @@ from topspeed_ai_os.core.ids import require_valid_run_id
 from topspeed_ai_os.tools.checksum import raw_sha256
 from topspeed_ai_os.tools.read.tabular import TabularData
 from topspeed_ai_os.tools.redaction import sanitized_source_uri
-from topspeed_ai_os.tools.result import ToolResult, ToolStatus
+from topspeed_ai_os.tools.result import SensitiveBytes, SourceMetadata, ToolResult, ToolStatus
 
 AD_DAILY_SCHEMA = "topspeed.ad_daily.synthetic.v1"
 _CHECKSUM = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -92,6 +92,7 @@ class Provenance:
     source_row_reference: str
     schema_version: str
     mapping_fingerprint: str
+    ingestion_identity: str
     normalization_rules_applied: tuple[str, ...]
     target_contract: str
     natural_key: tuple[Any, ...]
@@ -155,6 +156,7 @@ class BatchResult:
     publish_eligible: bool = False
     ingestion_identity: str | None = None
     summary: str = ""
+    batch_reason: ReasonCode | None = None
 
 
 class ReferencePublisher(Protocol):
@@ -169,11 +171,27 @@ class InMemoryReferencePublisher:
         self.last_ingestion_identity: str | None = None
 
     def publish(self, result: BatchResult) -> bool:
-        if not result.publish_eligible:
+        if (
+            not result.publish_eligible
+            or result.status is not BatchStatus.READY
+            or not result.accepted
+            or result.rejected
+            or result.conflicts
+        ):
             return False
-        if result.status is BatchStatus.DUPLICATE:
-            return False
-        self.current = result.accepted
+        current = list(self.current or ())
+        by_key = {record.natural_key: record for record in current}
+        for record in result.accepted:
+            previous = by_key.get(record.natural_key)
+            if (
+                previous is not None
+                and previous.canonical_business_hash != record.canonical_business_hash
+            ):
+                return False
+            if previous is None:
+                current.append(record)
+                by_key[record.natural_key] = record
+        self.current = tuple(current)
         self.last_ingestion_identity = result.ingestion_identity
         return True
 
@@ -200,19 +218,33 @@ def _mapping_entries(
             if isinstance(value, str):
                 entries.append(MappingEntry(source, identifier_type, str(external_id), value))
             elif isinstance(value, Mapping):
+                active = value.get("active", True)
+                if not isinstance(active, bool):
+                    raise ValueError("mapping active must be bool")
                 entries.append(
                     MappingEntry(
                         str(value.get("source", source)),
                         str(value.get("identifier_type", identifier_type)),
                         str(value.get("external_product_id", external_id)),
                         str(value.get("sku", "")),
-                        bool(value.get("active", True)),
+                        active,
                     )
                 )
             else:
                 raise ValueError("unsupported mapping entry")
         return tuple(entries)
-    return tuple(mapping)
+    entries = tuple(mapping)
+    if any(
+        not isinstance(entry, MappingEntry)
+        or not isinstance(entry.source, str)
+        or not isinstance(entry.identifier_type, str)
+        or not isinstance(entry.external_product_id, str)
+        or not isinstance(entry.sku, str)
+        or not isinstance(entry.active, bool)
+        for entry in entries
+    ):
+        raise ValueError("mapping entries must be valid MappingEntry values")
+    return entries
 
 
 def _fingerprint(entries: Sequence[MappingEntry], known_skus: Set[str]) -> str:
@@ -332,7 +364,25 @@ def _invalid_result(
         rejected=(RejectedRecord("batch", code, summary, reference),),
         publish_eligible=False,
         summary=summary,
+        batch_reason=code,
     )
+
+
+def _safe_natural_key(raw: Mapping[str, Any], sku: str | None = None) -> tuple[Any, ...] | None:
+    if sku is None:
+        return None
+    try:
+        channel = _text(raw.get("channel"))
+        stat_date = _parse_date(raw.get("stat_date"))
+        campaign_id = _text(raw.get("campaign_id"))
+    except (TypeError, ValueError):
+        return None
+    ad_group = raw.get("ad_group_id")
+    if ad_group in (None, ""):
+        ad_group = None
+    elif not isinstance(ad_group, str):
+        return None
+    return channel, stat_date, sku, campaign_id, ad_group
 
 
 def ingest_ad_daily(
@@ -350,6 +400,10 @@ def ingest_ad_daily(
     batch_id = (
         f"batch:{tool_result.request_id}" if hasattr(tool_result, "request_id") else "batch:invalid"
     )
+    if not isinstance(tool_result, ToolResult):
+        return _invalid_result(
+            "batch:invalid", ReasonCode.INVALID_TOOL_RESULT, "invalid ToolResult"
+        )
     if schema_version != AD_DAILY_SCHEMA:
         return _invalid_result(batch_id, ReasonCode.UNSUPPORTED_SCHEMA, "unsupported schema")
     try:
@@ -372,6 +426,18 @@ def ingest_ad_daily(
                 batch_id, ReasonCode.INVALID_TOOL_RESULT, "ToolResult boundary is incomplete"
             )
         metadata = tool_result.source_metadata
+        if not isinstance(metadata, SourceMetadata) or not isinstance(
+            tool_result.raw_result, SensitiveBytes
+        ):
+            return _invalid_result(
+                batch_id, ReasonCode.INVALID_TOOL_RESULT, "ToolResult boundary types are invalid"
+            )
+        if tool_result.run_id is not None and tool_result.run_id != run_id:
+            return _invalid_result(
+                batch_id,
+                ReasonCode.INVALID_TOOL_RESULT,
+                "ToolResult run_id does not match ingestion run_id",
+            )
         try:
             reference = _safe_reference(metadata.source_uri)
         except ValueError:
@@ -416,11 +482,7 @@ def ingest_ad_daily(
     mapping_fp = _fingerprint(entries, known_skus)
     ingestion_id = _ingestion_identity(metadata.checksum_sha256, mapping_fp)
     previous = tuple(existing)
-    if previous and all(
-        item.provenance.source_checksum == metadata.checksum_sha256
-        and item.provenance.mapping_fingerprint == mapping_fp
-        for item in previous
-    ):
+    if any(item.provenance.ingestion_identity == ingestion_id for item in previous):
         return BatchResult(
             batch_id,
             BatchStatus.DUPLICATE,
@@ -428,6 +490,7 @@ def ingest_ad_daily(
             publish_eligible=False,
             ingestion_identity=ingestion_id,
             summary="source duplicate / idempotent no-op",
+            batch_reason=ReasonCode.SOURCE_DUPLICATE,
         )
     try:
         created_at = clock()
@@ -451,6 +514,8 @@ def ingest_ad_daily(
             )
             continue
         raw = dict(zip(headers, values, strict=True))
+        normalized_rules: list[str] = []
+        sku: str | None = None
         try:
             if raw.get("data_as_of") in (None, ""):
                 raise _RowError(ReasonCode.INVALID_DATA_AS_OF, "source data_as_of is missing")
@@ -493,9 +558,17 @@ def ingest_ad_daily(
                 if field_name in raw:
                     value = raw[field_name]
                     if field_name == "ad_units":
-                        record[field_name] = None if value in (None, "") else _parse_integer(value)
+                        if value in (None, ""):
+                            normalized_rules.append("blank_ad_units_to_none")
+                            record[field_name] = None
+                        else:
+                            record[field_name] = _parse_integer(value)
                     else:
-                        record[field_name] = None if value in (None, "") else _text(value)
+                        if value in (None, ""):
+                            normalized_rules.append(f"blank_{field_name}_to_none")
+                            record[field_name] = None
+                        else:
+                            record[field_name] = _text(value)
             try:
                 _parse_datetime(raw["data_as_of"])
             except ValueError as exc:
@@ -503,7 +576,15 @@ def ingest_ad_daily(
             record["data_as_of"] = str(raw["data_as_of"])
             validate_contract("AD_DAILY", record, known_skus=known_skus)
         except _RowError as exc:
-            rejected.append(RejectedRecord(row_ref, exc.code, exc.summary, reference))
+            rejected.append(
+                RejectedRecord(
+                    row_ref,
+                    exc.code,
+                    exc.summary,
+                    reference,
+                    _safe_natural_key(raw),
+                )
+            )
             continue
         except ContractValidationError:
             rejected.append(
@@ -512,6 +593,7 @@ def ingest_ad_daily(
                     ReasonCode.CONTRACT_VALIDATION_FAILED,
                     "row rejected by validation",
                     reference,
+                    _safe_natural_key(raw, sku),
                 )
             )
             continue
@@ -521,7 +603,15 @@ def ingest_ad_daily(
                 if "data" in str(exc).lower() or "timezone" in str(exc).lower()
                 else ReasonCode.INVALID_SOURCE_VALUE
             )
-            rejected.append(RejectedRecord(row_ref, code, "row rejected by validation", reference))
+            rejected.append(
+                RejectedRecord(
+                    row_ref,
+                    code,
+                    "row rejected by validation",
+                    reference,
+                    _safe_natural_key(raw, sku),
+                )
+            )
             continue
         key = _natural_key(record)
         business_hash = payload_sha256(_business_payload(record))
@@ -537,15 +627,8 @@ def ingest_ad_daily(
             row_ref,
             schema_version,
             mapping_fp,
-            tuple(
-                rule
-                for rule in (
-                    "blank_campaign_name_to_none",
-                    "blank_ad_group_id_to_none",
-                    "blank_ad_units_to_none",
-                )
-                if rule.split("_to_")[0] in raw
-            ),
+            ingestion_id,
+            tuple(normalized_rules),
             "AD_DAILY",
             key,
             business_hash,
