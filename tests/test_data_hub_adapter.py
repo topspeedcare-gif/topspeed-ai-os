@@ -312,3 +312,128 @@ def test_mapping_fingerprint_allows_reprocessing_and_publisher_is_fail_closed():
     rejected = ingest(tool_result((ROW[:-1],)))
     assert publisher.publish(rejected) is False
     assert publisher.current == first.accepted
+
+
+def test_malformed_mapping_tuple_context_fails_closed_before_fingerprint():
+    result = ingest(
+        tool_result(),
+        sku_mapping={
+            (1, 2, 3): "TS-SYNTH-001",
+            ("tabular_file", "external_product_id", "ext-001"): "TS-SYNTH-001",
+        },
+    )
+    assert result.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+    assert result.accepted == ()
+    assert result.publish_eligible is False
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {("tabular_file", "ext-001"): "TS-SYNTH-001"},
+        {(1, "external_product_id", "ext-001"): "TS-SYNTH-001"},
+        {("tabular_file", 2, "ext-001"): "TS-SYNTH-001"},
+        {("tabular_file", "external_product_id", 3): "TS-SYNTH-001"},
+        {("tabular_file", "external_product_id", "ext-001"): 123},
+        {
+            ("tabular_file", "external_product_id", "ext-001"): "TS-SYNTH-001",
+            ("tabular_file", "external_product_id", "ext-002"): {"sku": 123},
+        },
+        {"": "TS-SYNTH-001"},
+        {"   ": "TS-SYNTH-001"},
+        {("", "external_product_id", "ext-001"): "TS-SYNTH-001"},
+        {("tabular_file", " ", "ext-001"): "TS-SYNTH-001"},
+        {("tabular_file", "external_product_id", " "): "TS-SYNTH-001"},
+    ],
+)
+def test_invalid_mapping_semantics_are_rejected_as_a_whole(mapping):
+    result = ingest(tool_result(), sku_mapping=mapping)
+    assert result.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+    assert result.accepted == ()
+    assert result.publish_eligible is False
+
+
+@pytest.mark.parametrize("active", [1, "true", None])
+def test_structured_mapping_active_requires_actual_bool(active):
+    result = ingest(
+        tool_result(),
+        sku_mapping={
+            ("tabular_file", "external_product_id", "ext-001"): {
+                "sku": "TS-SYNTH-001",
+                "active": active,
+            }
+        },
+    )
+    assert result.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+
+
+def test_supported_mapping_forms_still_resolve():
+    shorthand = ingest(tool_result(), sku_mapping={"ext-001": "TS-SYNTH-001"})
+    structured = ingest(
+        tool_result(),
+        sku_mapping={
+            ("tabular_file", "external_product_id", "ext-001"): {
+                "sku": "TS-SYNTH-001",
+                "active": True,
+            }
+        },
+    )
+    iterable = ingest(
+        tool_result(),
+        sku_mapping=[
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001")
+        ],
+    )
+    assert all(result.status is BatchStatus.READY for result in (shorthand, structured, iterable))
+
+
+def test_mapping_entry_iterable_rejects_non_boolean_active():
+    entry = MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001")
+    object.__setattr__(entry, "active", "true")
+    result = ingest(tool_result(), sku_mapping=[entry])
+    assert result.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+
+
+def test_valid_mapping_fingerprint_is_order_independent_and_effective_only():
+    first = ingest(
+        tool_result(),
+        sku_mapping=[
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001"),
+            MappingEntry("tabular_file", "external_product_id", "inactive", "TS-SYNTH-001", False),
+        ],
+    )
+    reordered = ingest(
+        tool_result(),
+        sku_mapping=[
+            MappingEntry("tabular_file", "external_product_id", "inactive", "TS-SYNTH-001", False),
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001"),
+        ],
+    )
+    changed = ingest(
+        tool_result(),
+        sku_mapping=[
+            MappingEntry("tabular_file", "external_product_id", "ext-001", "TS-SYNTH-001"),
+            MappingEntry("tabular_file", "external_product_id", "ext-002", "TS-SYNTH-001"),
+        ],
+    )
+    assert (
+        first.accepted[0].provenance.mapping_fingerprint
+        == reordered.accepted[0].provenance.mapping_fingerprint
+    )
+    assert (
+        first.accepted[0].provenance.mapping_fingerprint
+        != changed.accepted[0].provenance.mapping_fingerprint
+    )
+
+
+def test_inactive_mapping_does_not_resolve_a_sku():
+    result = ingest(
+        tool_result(),
+        sku_mapping={
+            ("tabular_file", "external_product_id", "ext-001"): {
+                "sku": "TS-SYNTH-001",
+                "active": False,
+            }
+        },
+    )
+    assert result.rejected[0].reason_code is ReasonCode.UNKNOWN_SKU

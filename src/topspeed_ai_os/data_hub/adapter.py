@@ -208,25 +208,49 @@ def _safe_reference(value: object) -> str:
 def _mapping_entries(
     mapping: Mapping[Any, Any] | Iterable[MappingEntry],
 ) -> tuple[MappingEntry, ...]:
+    def required_text(value: object, field: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"mapping {field} must be a non-empty string")
+        return value
+
+    def canonical_entry(
+        source: object,
+        identifier_type: object,
+        external_product_id: object,
+        sku: object,
+        active: object = True,
+    ) -> MappingEntry:
+        if not isinstance(active, bool):
+            raise ValueError("mapping active must be bool")
+        return MappingEntry(
+            required_text(source, "source"),
+            required_text(identifier_type, "identifier_type"),
+            required_text(external_product_id, "external_product_id"),
+            required_text(sku, "sku"),
+            active,
+        )
+
     if isinstance(mapping, Mapping):
         entries: list[MappingEntry] = []
         for key, value in mapping.items():
-            if isinstance(key, tuple) and len(key) == 3:
+            if isinstance(key, tuple):
+                if len(key) != 3:
+                    raise ValueError("mapping tuple key must contain three fields")
                 source, identifier_type, external_id = key
             else:
+                if not isinstance(key, str) or not key.strip():
+                    raise ValueError("mapping shorthand key must be a non-empty string")
                 source, identifier_type, external_id = "tabular_file", "external_product_id", key
             if isinstance(value, str):
-                entries.append(MappingEntry(source, identifier_type, str(external_id), value))
+                entries.append(canonical_entry(source, identifier_type, external_id, value))
             elif isinstance(value, Mapping):
                 active = value.get("active", True)
-                if not isinstance(active, bool):
-                    raise ValueError("mapping active must be bool")
                 entries.append(
-                    MappingEntry(
-                        str(value.get("source", source)),
-                        str(value.get("identifier_type", identifier_type)),
-                        str(value.get("external_product_id", external_id)),
-                        str(value.get("sku", "")),
+                    canonical_entry(
+                        value.get("source", source),
+                        value.get("identifier_type", identifier_type),
+                        value.get("external_product_id", external_id),
+                        value.get("sku"),
                         active,
                     )
                 )
@@ -234,17 +258,20 @@ def _mapping_entries(
                 raise ValueError("unsupported mapping entry")
         return tuple(entries)
     entries = tuple(mapping)
-    if any(
-        not isinstance(entry, MappingEntry)
-        or not isinstance(entry.source, str)
-        or not isinstance(entry.identifier_type, str)
-        or not isinstance(entry.external_product_id, str)
-        or not isinstance(entry.sku, str)
-        or not isinstance(entry.active, bool)
-        for entry in entries
-    ):
-        raise ValueError("mapping entries must be valid MappingEntry values")
-    return entries
+    canonical: list[MappingEntry] = []
+    for entry in entries:
+        if not isinstance(entry, MappingEntry):
+            raise ValueError("mapping entries must be valid MappingEntry values")
+        canonical.append(
+            canonical_entry(
+                entry.source,
+                entry.identifier_type,
+                entry.external_product_id,
+                entry.sku,
+                entry.active,
+            )
+        )
+    return tuple(canonical)
 
 
 def _fingerprint(entries: Sequence[MappingEntry], known_skus: Set[str]) -> str:
