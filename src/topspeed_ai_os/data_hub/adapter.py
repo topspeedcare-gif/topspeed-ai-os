@@ -14,7 +14,7 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from typing import Any, Protocol
 
-from topspeed_ai_os.contracts import ContractValidationError, validate_contract
+from topspeed_ai_os.contracts import CONTRACT_NAMES, ContractValidationError, validate_contract
 from topspeed_ai_os.core.canonical import payload_sha256
 from topspeed_ai_os.core.ids import require_valid_run_id
 from topspeed_ai_os.tools.checksum import raw_sha256
@@ -157,6 +157,7 @@ class BatchResult:
     ingestion_identity: str | None = None
     summary: str = ""
     batch_reason: ReasonCode | None = None
+    target_contract: str | None = None
 
 
 class ReferencePublisher(Protocol):
@@ -171,6 +172,12 @@ class InMemoryReferencePublisher:
         self.last_ingestion_identity: str | None = None
 
     def publish(self, result: BatchResult) -> bool:
+        if not isinstance(result, BatchResult):
+            return False
+        try:
+            target_contract = _require_contract_name(result.target_contract)
+        except (TypeError, ValueError):
+            return False
         if (
             not result.publish_eligible
             or result.status is not BatchStatus.READY
@@ -180,9 +187,19 @@ class InMemoryReferencePublisher:
         ):
             return False
         current = list(self.current or ())
-        by_key = {record.natural_key: record for record in current}
+        by_key: dict[tuple[str, tuple[Any, ...]], AcceptedRecord] = {}
+        for record in current:
+            if not _record_contract_coherent(record):
+                return False
+            identity = _record_identity(record)
+            if identity in by_key:
+                return False
+            by_key[identity] = record
         for record in result.accepted:
-            previous = by_key.get(record.natural_key)
+            if not _record_contract_coherent(record) or record.contract_name != target_contract:
+                return False
+            identity = _record_identity(record)
+            previous = by_key.get(identity)
             if (
                 previous is not None
                 and previous.canonical_business_hash != record.canonical_business_hash
@@ -190,10 +207,26 @@ class InMemoryReferencePublisher:
                 return False
             if previous is None:
                 current.append(record)
-                by_key[record.natural_key] = record
+                by_key[identity] = record
         self.current = tuple(current)
         self.last_ingestion_identity = result.ingestion_identity
         return True
+
+    def get_current(self, target_contract: object, natural_key: object) -> AcceptedRecord | None:
+        try:
+            contract = _require_contract_name(target_contract)
+        except (TypeError, ValueError):
+            return None
+        if not isinstance(natural_key, tuple):
+            return None
+        for record in self.current or ():
+            if (
+                _record_contract_coherent(record)
+                and record.contract_name == contract
+                and record.natural_key == natural_key
+            ):
+                return record
+        return None
 
 
 def _safe_reference(value: object) -> str:
@@ -203,6 +236,33 @@ def _safe_reference(value: object) -> str:
     if sanitized != value:
         raise ValueError("source reference is not sanitized")
     return sanitized
+
+
+def _require_contract_name(value: object) -> str:
+    if not isinstance(value, str) or value not in CONTRACT_NAMES:
+        raise ValueError("unknown Contract name")
+    return value
+
+
+def _record_contract_coherent(record: object) -> bool:
+    if not isinstance(record, AcceptedRecord):
+        return False
+    try:
+        contract_name = _require_contract_name(record.contract_name)
+    except (TypeError, ValueError):
+        return False
+    provenance = record.provenance
+    if not isinstance(provenance, Provenance):
+        return False
+    try:
+        provenance_contract = _require_contract_name(provenance.target_contract)
+    except (TypeError, ValueError):
+        return False
+    return provenance_contract == contract_name
+
+
+def _record_identity(record: AcceptedRecord) -> tuple[str, tuple[Any, ...]]:
+    return record.contract_name, record.natural_key
 
 
 def _mapping_entries(
@@ -383,7 +443,11 @@ def _natural_key(record: Mapping[str, Any]) -> tuple[Any, ...]:
 
 
 def _invalid_result(
-    batch_id: str, code: ReasonCode, summary: str, reference: str = ""
+    batch_id: str,
+    code: ReasonCode,
+    summary: str,
+    reference: str = "",
+    target_contract: str = "AD_DAILY",
 ) -> BatchResult:
     return BatchResult(
         batch_id=batch_id,
@@ -392,6 +456,7 @@ def _invalid_result(
         publish_eligible=False,
         summary=summary,
         batch_reason=code,
+        target_contract=target_contract,
     )
 
 
@@ -509,7 +574,16 @@ def ingest_ad_daily(
     mapping_fp = _fingerprint(entries, known_skus)
     ingestion_id = _ingestion_identity(metadata.checksum_sha256, mapping_fp)
     previous = tuple(existing)
-    if any(item.provenance.ingestion_identity == ingestion_id for item in previous):
+    for item in previous:
+        if not _record_contract_coherent(item):
+            return _invalid_result(
+                batch_id,
+                ReasonCode.INVALID_TOOL_RESULT,
+                "existing record Contract metadata is inconsistent",
+                reference,
+            )
+    same_contract_previous = tuple(item for item in previous if item.contract_name == "AD_DAILY")
+    if any(item.provenance.ingestion_identity == ingestion_id for item in same_contract_previous):
         return BatchResult(
             batch_id,
             BatchStatus.DUPLICATE,
@@ -518,6 +592,7 @@ def ingest_ad_daily(
             ingestion_identity=ingestion_id,
             summary="source duplicate / idempotent no-op",
             batch_reason=ReasonCode.SOURCE_DUPLICATE,
+            target_contract="AD_DAILY",
         )
     try:
         created_at = clock()
@@ -530,7 +605,9 @@ def ingest_ad_daily(
     rejected: list[RejectedRecord] = []
     duplicates: list[DuplicateRecord] = []
     conflicts: list[ConflictRecord] = []
-    seen: dict[tuple[Any, ...], AcceptedRecord] = {item.natural_key: item for item in previous}
+    seen: dict[tuple[str, tuple[Any, ...]], AcceptedRecord] = {
+        _record_identity(item): item for item in same_contract_previous
+    }
     for index, values in enumerate(data.rows, start=2):
         row_ref = _row_ref(data, index)
         if len(values) != len(headers):
@@ -661,9 +738,10 @@ def ingest_ad_daily(
             business_hash,
         )
         candidate = AcceptedRecord("AD_DAILY", record, key, business_hash, provenance)
-        prior = seen.get(key)
+        candidate_identity = _record_identity(candidate)
+        prior = seen.get(candidate_identity)
         if prior is None:
-            seen[key] = candidate
+            seen[candidate_identity] = candidate
             accepted.append(candidate)
         elif prior.canonical_business_hash == business_hash:
             duplicates.append(
@@ -698,6 +776,7 @@ def ingest_ad_daily(
         eligible,
         ingestion_id,
         status.value,
+        target_contract="AD_DAILY",
     )
 
 

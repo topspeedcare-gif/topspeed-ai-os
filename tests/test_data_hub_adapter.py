@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -437,3 +438,129 @@ def test_inactive_mapping_does_not_resolve_a_sku():
         },
     )
     assert result.rejected[0].reason_code is ReasonCode.UNKNOWN_SKU
+
+
+def _other_contract_record(record):
+    return replace(
+        record,
+        contract_name="CHANNEL_DAILY",
+        provenance=replace(record.provenance, target_contract="CHANNEL_DAILY"),
+    )
+
+
+def test_publisher_contract_scoped_identity_and_lookup():
+    ad_result = ingest(tool_result())
+    ad_record = ad_result.accepted[0]
+    other_record = _other_contract_record(ad_record)
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(ad_result)
+    other_result = BatchResult(
+        "channel-fixture",
+        BatchStatus.READY,
+        accepted=(other_record,),
+        publish_eligible=True,
+        target_contract="CHANNEL_DAILY",
+    )
+    assert publisher.publish(other_result)
+    assert publisher.current == (ad_record, other_record)
+    assert publisher.get_current("AD_DAILY", ad_record.natural_key) is ad_record
+    assert publisher.get_current("CHANNEL_DAILY", other_record.natural_key) is other_record
+    assert publisher.get_current("UNKNOWN", ad_record.natural_key) is None
+    with pytest.raises(TypeError):
+        publisher.get_current(ad_record.natural_key)  # type: ignore[call-arg]
+
+
+def test_ingestion_existing_state_is_contract_scoped():
+    ad_record = ingest(tool_result()).accepted[0]
+    other_record = _other_contract_record(ad_record)
+    result = ingest(tool_result(), existing=(other_record,))
+    assert result.status is BatchStatus.READY
+    assert len(result.accepted) == 1
+
+
+@pytest.mark.parametrize(
+    "target_contract", [None, "", "   ", "ad_daily", "UNKNOWN", True, 1, object()]
+)
+def test_publisher_rejects_invalid_target_contract_without_mutation(target_contract):
+    ad_record = ingest(tool_result()).accepted[0]
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(ingest(tool_result()))
+    before = publisher.current
+    invalid = BatchResult(
+        "invalid-target",
+        BatchStatus.READY,
+        accepted=(ad_record,),
+        publish_eligible=True,
+        target_contract=target_contract,
+    )
+    assert publisher.publish(invalid) is False
+    assert publisher.current == before
+
+
+def test_publisher_rejects_contract_mismatch_and_mixed_batch_without_mutation():
+    ad_record = ingest(tool_result()).accepted[0]
+    other_record = _other_contract_record(ad_record)
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(ingest(tool_result()))
+    before = publisher.current
+    mismatch = BatchResult(
+        "mismatch",
+        BatchStatus.READY,
+        accepted=(ad_record,),
+        publish_eligible=True,
+        target_contract="CHANNEL_DAILY",
+    )
+    mixed = BatchResult(
+        "mixed",
+        BatchStatus.READY,
+        accepted=(ad_record, other_record),
+        publish_eligible=True,
+        target_contract="AD_DAILY",
+    )
+    assert publisher.publish(mismatch) is False
+    assert publisher.current == before
+    assert publisher.publish(mixed) is False
+    assert publisher.current == before
+
+
+def test_publisher_rejects_provenance_contract_mismatch_without_mutation():
+    ad_record = ingest(tool_result()).accepted[0]
+    malformed = replace(
+        ad_record,
+        provenance=replace(ad_record.provenance, target_contract="CHANNEL_DAILY"),
+    )
+    publisher = InMemoryReferencePublisher()
+    before = publisher.current
+    result = BatchResult(
+        "bad-provenance",
+        BatchStatus.READY,
+        accepted=(malformed,),
+        publish_eligible=True,
+        target_contract="AD_DAILY",
+    )
+    assert publisher.publish(result) is False
+    assert publisher.current == before
+
+
+def test_publisher_plans_all_records_before_mutation():
+    ad_record = ingest(tool_result()).accepted[0]
+    row_b = list(ROW)
+    row_b[2] = "ext-002"
+    row_b[3] = "cmp-2"
+    new_record = ingest(
+        tool_result((tuple(row_b),), raw=b"new-b"),
+        sku_mapping={("tabular_file", "external_product_id", "ext-002"): "TS-SYNTH-001"},
+    ).accepted[0]
+    conflicting = replace(ad_record, canonical_business_hash="sha256:" + "0" * 64)
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(ingest(tool_result()))
+    before = publisher.current
+    result = BatchResult(
+        "atomic-conflict",
+        BatchStatus.READY,
+        accepted=(new_record, conflicting),
+        publish_eligible=True,
+        target_contract="AD_DAILY",
+    )
+    assert publisher.publish(result) is False
+    assert publisher.current == before
