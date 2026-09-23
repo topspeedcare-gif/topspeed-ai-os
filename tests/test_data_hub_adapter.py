@@ -564,3 +564,165 @@ def test_publisher_plans_all_records_before_mutation():
     )
     assert publisher.publish(result) is False
     assert publisher.current == before
+
+
+def _assert_publisher_rejects_without_mutation(malformed):
+    valid = ingest(tool_result())
+    record = valid.accepted[0]
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(valid) is True
+    before_current = publisher.current
+    before_ingestion_identity = publisher.last_ingestion_identity
+    before_lookup = publisher.get_current("AD_DAILY", record.natural_key)
+    before_count = len(publisher.current or ())
+
+    assert publisher.publish(malformed) is False
+
+    assert publisher.current == before_current
+    assert len(publisher.current or ()) == before_count
+    assert publisher.get_current("AD_DAILY", record.natural_key) is before_lookup
+    assert publisher.last_ingestion_identity == before_ingestion_identity
+
+
+@pytest.mark.parametrize(
+    "accepted_factory",
+    [
+        lambda record: 1,
+        lambda record: "not-records",
+        lambda record: {},
+        lambda record: [],
+        lambda record: (item for item in (record,)),
+        lambda record: (object(),),
+    ],
+    ids=["integer", "string", "mapping", "list", "generator", "wrong-item"],
+)
+def test_publisher_rejects_malformed_accepted_collection_without_mutation(accepted_factory):
+    valid = ingest(tool_result())
+    malformed = replace(valid, accepted=accepted_factory(valid.accepted[0]))
+    _assert_publisher_rejects_without_mutation(malformed)
+
+
+@pytest.mark.parametrize(
+    ("field", "value_factory"),
+    [
+        ("rejected", lambda: []),
+        ("duplicates", lambda: {}),
+        ("conflicts", lambda: iter(())),
+        ("rejected", lambda: (object(),)),
+        ("duplicates", lambda: (object(),)),
+        ("conflicts", lambda: (object(),)),
+    ],
+    ids=[
+        "rejected-shape",
+        "duplicates-shape",
+        "conflicts-shape",
+        "rejected-item",
+        "duplicates-item",
+        "conflicts-item",
+    ],
+)
+def test_publisher_rejects_other_malformed_result_collections_without_mutation(
+    field, value_factory
+):
+    valid = ingest(tool_result())
+    malformed = replace(valid, **{field: value_factory()})
+    _assert_publisher_rejects_without_mutation(malformed)
+
+
+@pytest.mark.parametrize(
+    "natural_key_factory",
+    [
+        lambda: [],
+        lambda: {},
+        lambda: set(),
+        lambda: "text",
+        lambda: 1,
+        lambda: None,
+        lambda: (),
+        lambda: ("COUPANG", ["nested"]),
+    ],
+    ids=["list", "mapping", "set", "string", "integer", "none", "empty", "nested-list"],
+)
+def test_publisher_rejects_unsafe_natural_keys_without_mutation(natural_key_factory):
+    valid = ingest(tool_result())
+    malformed_record = replace(valid.accepted[0], natural_key=natural_key_factory())
+    malformed = replace(valid, accepted=(malformed_record,))
+    _assert_publisher_rejects_without_mutation(malformed)
+
+
+@pytest.mark.parametrize(
+    "malformed_factory",
+    [
+        lambda valid: replace(
+            valid,
+            accepted=(replace(valid.accepted[0], contract_name="UNKNOWN"),),
+        ),
+        lambda valid: replace(valid, target_contract="CHANNEL_DAILY"),
+        lambda valid: replace(
+            valid,
+            accepted=(replace(valid.accepted[0], provenance=object()),),
+        ),
+        lambda valid: replace(
+            valid,
+            accepted=(
+                replace(
+                    valid.accepted[0],
+                    provenance=replace(
+                        valid.accepted[0].provenance, target_contract="CHANNEL_DAILY"
+                    ),
+                ),
+            ),
+        ),
+        lambda valid: replace(
+            valid,
+            accepted=(replace(valid.accepted[0], canonical_business_hash=1),),
+        ),
+    ],
+    ids=[
+        "invalid-contract",
+        "batch-contract-mismatch",
+        "invalid-provenance",
+        "provenance-contract-mismatch",
+        "invalid-business-hash",
+    ],
+)
+def test_publisher_rejects_malformed_accepted_records_without_mutation(malformed_factory):
+    valid = ingest(tool_result())
+    _assert_publisher_rejects_without_mutation(malformed_factory(valid))
+
+
+@pytest.mark.parametrize(
+    "malformed_factory",
+    [
+        lambda valid: object(),
+        lambda valid: replace(valid, target_contract=1),
+        lambda valid: replace(valid, status="READY"),
+        lambda valid: replace(valid, status=1),
+        lambda valid: replace(valid, publish_eligible=1),
+        lambda valid: replace(valid, publish_eligible="true"),
+        lambda valid: replace(valid, ingestion_identity=1),
+    ],
+    ids=[
+        "outer-object",
+        "target-contract",
+        "status-string",
+        "status-integer",
+        "eligible-integer",
+        "eligible-string",
+        "ingestion-identity",
+    ],
+)
+def test_publisher_rejects_malformed_control_fields_without_mutation(malformed_factory):
+    valid = ingest(tool_result())
+    _assert_publisher_rejects_without_mutation(malformed_factory(valid))
+
+
+def test_publisher_preserves_valid_ready_batch_with_duplicate_evidence():
+    result = ingest(tool_result((ROW, ROW), raw=b"batch-with-duplicate"))
+    assert result.status is BatchStatus.READY
+    assert len(result.accepted) == 1
+    assert len(result.duplicates) == 1
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(result) is True
+    assert publisher.current == result.accepted
+    assert publisher.last_ingestion_identity == result.ingestion_identity

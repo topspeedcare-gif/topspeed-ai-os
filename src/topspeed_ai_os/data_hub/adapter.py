@@ -174,9 +174,32 @@ class InMemoryReferencePublisher:
     def publish(self, result: BatchResult) -> bool:
         if not isinstance(result, BatchResult):
             return False
+        if (
+            not isinstance(result.accepted, tuple)
+            or not isinstance(result.rejected, tuple)
+            or not isinstance(result.duplicates, tuple)
+            or not isinstance(result.conflicts, tuple)
+        ):
+            return False
+        if (
+            not isinstance(result.status, BatchStatus)
+            or not isinstance(result.publish_eligible, bool)
+            or (
+                result.ingestion_identity is not None
+                and not isinstance(result.ingestion_identity, str)
+            )
+        ):
+            return False
         try:
             target_contract = _require_contract_name(result.target_contract)
         except (TypeError, ValueError):
+            return False
+        if (
+            not all(isinstance(record, AcceptedRecord) for record in result.accepted)
+            or not all(isinstance(record, RejectedRecord) for record in result.rejected)
+            or not all(isinstance(record, DuplicateRecord) for record in result.duplicates)
+            or not all(isinstance(record, ConflictRecord) for record in result.conflicts)
+        ):
             return False
         if (
             not result.publish_eligible
@@ -189,14 +212,14 @@ class InMemoryReferencePublisher:
         current = list(self.current or ())
         by_key: dict[tuple[str, tuple[Any, ...]], AcceptedRecord] = {}
         for record in current:
-            if not _record_contract_coherent(record):
+            if not _record_publication_safe(record):
                 return False
             identity = _record_identity(record)
             if identity in by_key:
                 return False
             by_key[identity] = record
         for record in result.accepted:
-            if not _record_contract_coherent(record) or record.contract_name != target_contract:
+            if not _record_publication_safe(record, target_contract):
                 return False
             identity = _record_identity(record)
             previous = by_key.get(identity)
@@ -263,6 +286,20 @@ def _record_contract_coherent(record: object) -> bool:
 
 def _record_identity(record: AcceptedRecord) -> tuple[str, tuple[Any, ...]]:
     return record.contract_name, record.natural_key
+
+
+def _record_publication_safe(record: object, target_contract: str | None = None) -> bool:
+    if not _record_contract_coherent(record):
+        return False
+    if target_contract is not None and record.contract_name != target_contract:
+        return False
+    if not isinstance(record.natural_key, tuple) or not record.natural_key:
+        return False
+    try:
+        hash(record.natural_key)
+    except TypeError:
+        return False
+    return isinstance(record.canonical_business_hash, str)
 
 
 def _mapping_entries(
