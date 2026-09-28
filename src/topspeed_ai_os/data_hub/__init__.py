@@ -16,11 +16,13 @@ from .adapter import (
     ingest_ad_daily,
 )
 from .channel_daily import CHANNEL_DAILY_SCHEMA, DERIVE_NET_SALES_RULE, ingest_channel_daily
+from .product_master import PRODUCT_MASTER_SCHEMA, ingest_product_master
 
 __all__ = [
     "AD_DAILY_SCHEMA",
     "CHANNEL_DAILY_SCHEMA",
     "DERIVE_NET_SALES_RULE",
+    "PRODUCT_MASTER_SCHEMA",
     "AcceptedRecord",
     "BatchResult",
     "BatchStatus",
@@ -34,4 +36,5 @@ __all__ = [
     "SourceBatch",
     "ingest_ad_daily",
     "ingest_channel_daily",
+    "ingest_product_master",
 ]
