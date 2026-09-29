@@ -190,11 +190,12 @@ def ingest_inventory(
         return _invalid_result(batch_id, ReasonCode.UNSUPPORTED_SCHEMA, "unsupported schema")
     try:
         require_valid_run_id(run_id)
-        known_skus = _known_sku_set(known_skus)
     except (TypeError, ValueError):
-        return _invalid_result(
-            batch_id, ReasonCode.INVALID_TOOL_RESULT, "invalid run_id or known_skus"
-        )
+        return _invalid_result(batch_id, ReasonCode.INVALID_TOOL_RESULT, "invalid run_id")
+    try:
+        known_skus = _known_sku_set(known_skus)
+    except Exception:
+        return _invalid_result(batch_id, ReasonCode.INVALID_TOOL_RESULT, "invalid known_skus")
 
     if tool_result.status is not ToolStatus.SUCCESS:
         return _invalid_result(
@@ -246,6 +247,11 @@ def ingest_inventory(
         return _invalid_result(batch_id, ReasonCode.INVALID_ROW_SHAPE, str(exc), reference)
     try:
         entries = _mapping_entries(sku_mapping)
+    except Exception:
+        return _invalid_result(
+            batch_id, ReasonCode.UNSUPPORTED_MAPPING, "unsupported SKU mapping", reference
+        )
+    try:
         mapping_fingerprint = _fingerprint(entries, known_skus)
     except (TypeError, ValueError):
         return _invalid_result(
@@ -255,7 +261,7 @@ def ingest_inventory(
     ingestion_identity = _ingestion_identity(metadata.checksum_sha256, mapping_fingerprint)
     try:
         previous = tuple(existing)
-    except TypeError:
+    except Exception:
         return _invalid_result(
             batch_id, ReasonCode.INVALID_TOOL_RESULT, "invalid existing records", reference
         )

@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+import topspeed_ai_os.data_hub.inventory as inventory_module
 from topspeed_ai_os.contracts import validate_contract
 from topspeed_ai_os.core.canonical import payload_sha256
 from topspeed_ai_os.data_hub import (
@@ -153,11 +154,13 @@ def test_valid_synthetic_row_builds_exact_inventory_contract_record():
 
 def test_final_validation_call_is_exact_full_inventory_validation(monkeypatch):
     calls: list[tuple[object, ...]] = []
+    original_validate_contract = inventory_module.validate_contract
 
     def spy(*args, **kwargs):
         calls.append((*args, kwargs))
+        return original_validate_contract(*args, **kwargs)
 
-    monkeypatch.setattr("topspeed_ai_os.data_hub.inventory.validate_contract", spy)
+    monkeypatch.setattr(inventory_module, "validate_contract", spy)
     result = ingest()
     assert result.status is BatchStatus.READY
     assert calls == [
@@ -297,6 +300,55 @@ def test_malformed_mapping_reuses_shared_fail_closed_normalization(mapping):
     result = ingest(sku_mapping=mapping)
     assert result.status is BatchStatus.REJECTED
     assert result.batch_reason is ReasonCode.UNSUPPORTED_MAPPING
+
+
+class _RuntimeErrorIterable:
+    def __iter__(self):
+        raise RuntimeError("synthetic iteration failure")
+
+
+class _SyntheticBaseException(BaseException):
+    pass
+
+
+class _BaseExceptionIterable:
+    def __iter__(self):
+        raise _SyntheticBaseException("synthetic base exception")
+
+
+@pytest.mark.parametrize(
+    ("boundary", "reason"),
+    [
+        ("known_skus", ReasonCode.INVALID_TOOL_RESULT),
+        ("sku_mapping", ReasonCode.UNSUPPORTED_MAPPING),
+        ("existing", ReasonCode.INVALID_TOOL_RESULT),
+    ],
+)
+def test_iterable_runtime_errors_fail_closed_and_preserve_publisher_state(boundary, reason):
+    prior = ingest(tool_result(raw=b"iterable-prior"))
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(prior) is True
+    current = publisher.current
+    last_ingestion_identity = publisher.last_ingestion_identity
+
+    rejected = ingest(
+        tool_result(raw=f"iterable-{boundary}".encode()),
+        **{boundary: _RuntimeErrorIterable()},
+    )
+
+    assert rejected.status is BatchStatus.REJECTED
+    assert rejected.batch_reason is reason
+    assert rejected.publish_eligible is False
+    assert rejected.accepted == ()
+    assert publisher.publish(rejected) is False
+    assert publisher.current == current
+    assert publisher.last_ingestion_identity == last_ingestion_identity
+
+
+@pytest.mark.parametrize("boundary", ["known_skus", "sku_mapping", "existing"])
+def test_iterable_base_exceptions_are_not_caught(boundary):
+    with pytest.raises(_SyntheticBaseException, match="synthetic base exception"):
+        ingest(**{boundary: _BaseExceptionIterable()})
 
 
 @pytest.mark.parametrize(
