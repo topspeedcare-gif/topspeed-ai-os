@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://topspeed.local/developer-workflow/v1/development_workflow_state_v1.schema.json",
+  "title": "Development Workflow State V1",
+  "type": "object",
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "sha1": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)(?!.*//)[^\\r\\n]+$"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "AUDIT1_DRAFT",
+        "AUDIT2_WORK_ORDER_REVIEW",
+        "BUILDER_IMPLEMENTATION",
+        "AUDIT1_IMPLEMENTATION_AUDIT",
+        "AUDIT2_IMPLEMENTATION_REAUDIT",
+        "PUBLICATION_READY"
+      ]
+    },
+    "transitionStatus": {
+      "type": "string",
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "COMPLETED",
+        "STOPPED",
+        "RECONCILIATION_REQUIRED"
+      ]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "BLOCKED"
+      ]
+    },
+    "operationClass": {
+      "type": "string",
+      "enum": [
+        "DOC_WRITE",
+        "SOURCE_WRITE",
+        "TEST_WRITE",
+        "CONFIG_WRITE",
+        "LOCAL_COMMIT",
+        "READ_ONLY_VALIDATION"
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "development_workflow_state.v1"
+    },
+    "workflow_run_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "work_item_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "phase": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "slice": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stage": {
+      "$ref": "#/$defs/stage"
+    },
+    "actor": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "transition_id": {
+      "$ref": "#/$defs/nonEmptyString"
+    },
+    "idempotency_key": {
+      "$ref": "#/$defs/sha256"
+    },
+    "transition_status": {
+      "$ref": "#/$defs/transitionStatus"
+    },
+    "baseline_sha": {
+      "$ref": "#/$defs/sha1"
+    },
+    "pre_stage_sha": {
+      "$ref": "#/$defs/sha1"
+    },
+    "post_stage_sha": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "result_sha": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha1"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope_hash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "parent_scope_hash": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/sha256"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "verdict": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/verdict"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "work_order_ref": {
+      "$ref": "#/$defs/safePath"
+    },
+    "approved_work_order_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/nonEmptyString"
+      }
+    },
+    "actual_changed_paths": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/safePath"
+      },
+      "uniqueItems": true
+    },
+    "actual_operation_classes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/operationClass"
+      },
+      "uniqueItems": true
+    },
+    "expected_next_stage": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/stage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "human_approval_required": {
+      "type": "boolean"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "created_at": {
+      "$ref": "#/$defs/dateTime"
+    },
+    "completed_at": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/dateTime"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "workflow_run_id",
+    "work_item_id",
+    "phase",
+    "slice",
+    "stage",
+    "actor",
+    "transition_id",
+    "idempotency_key",
+    "transition_status",
+    "baseline_sha",
+    "pre_stage_sha",
+    "post_stage_sha",
+    "result_sha",
+    "scope_hash",
+    "parent_scope_hash",
+    "attempt",
+    "verdict",
+    "findings",
+    "work_order_ref",
+    "approved_work_order_sha256",
+    "evidence_refs",
+    "actual_changed_paths",
+    "actual_operation_classes",
+    "expected_next_stage",
+    "human_approval_required",
+    "error_code",
+    "created_at",
+    "completed_at"
+  ]
+}
