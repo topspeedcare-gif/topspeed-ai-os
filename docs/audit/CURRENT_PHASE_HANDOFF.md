@@ -2,7 +2,7 @@
 
 DOCUMENT STATUS: DERIVED / NON-NORMATIVE
 
-EVIDENCE CUTOFF: 2026-09-22
+EVIDENCE CUTOFF: 2026-09-30
 
 ## TRUTH PRIORITY
 
@@ -14,7 +14,7 @@ If this document conflicts with repository source, Frozen documents, or exact ev
 
 ## CURRENT PHASE
 
-PHASE 3 — Read-only Tools
+PHASE 4 — Data Hub Adapter
 
 PHASE 3 implementation = COMPLETE / PASS
 
@@ -24,34 +24,40 @@ PHASE 3 final aggregate audit = PASS
 
 PHASE 3 overall = PASS
 
-PHASE 4 entry = PENDING EXPLICIT GATE
+PHASE 4 entry = COMPLETE / AUTHORIZED
 
-PHASE 4 implementation = NOT STARTED. A separate explicit Gate is required before PHASE 4 entry; PHASE 3 PASS does not authorize it.
+PHASE 4 implementation = IN PROGRESS
+
+PHASE 4 overall = NOT COMPLETE
+
+PHASE 5 = NOT STARTED
 
 ## CANONICAL BRANCH
 
-`audit/phase3-read-only-tools`
+`audit/phase4-data-hub-adapter`
 
-## CANONICAL HEAD
+## CANONICAL IMPLEMENTATION HEAD
 
 Implementation/evidence baseline:
 
-`3f8018c1755bc05b1e484e1b8eb8984746fe15db`
+`a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
 
-CANONICAL HEAD in this document means: “Latest independently audited implementation/evidence baseline commit.”
+CANONICAL IMPLEMENTATION HEAD in this document means: “Latest independently audited and published implementation/evidence baseline commit.”
 
-HANDOFF-only documentation commits are excluded. A later HANDOFF documentation commit can therefore make the actual Git branch HEAD differ from CANONICAL HEAD. These values must not be assumed to be identical.
+HANDOFF-only documentation commits are excluded. A later HANDOFF documentation commit can therefore make the actual Git branch HEAD differ from CANONICAL IMPLEMENTATION HEAD. These values must not be assumed to be identical.
 
 Reference baselines:
 
-- Actual branch HEAD at this HANDOFF update: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
-- `origin/audit/phase3-read-only-tools`: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
+- Actual branch HEAD before this HANDOFF update: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- `origin/audit/phase4-data-hub-adapter`: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
 - `origin/main`: `f51dde902e1d460f9e55ff41841aa80970ea723f`
 - Architecture Freeze: `b45aa64675bbb903236bdf2a4309d5525b9fcba5`
 
 Actual branch HEAD must always be resolved independently from Git at the beginning of every execution task.
 
 ## IMPLEMENTED
+
+### PHASE 3
 
 The current repository and Frozen evidence support the following implementation scope:
 
@@ -73,9 +79,53 @@ The current repository and Frozen evidence support the following implementation 
 - GET-only production transport boundary
 - Write-operation prohibition
 
-PHASE 3 implementation is complete. PHASE 4 implementation and LINER Research Provider implementation have not started.
+PHASE 3 implementation and operational verification are complete and PASS. LINER Research Provider implementation has not started.
+
+### PHASE 4
+
+The following published synthetic/internal architecture-proof Slices currently exist:
+
+1. `AD_DAILY`
+2. `CHANNEL_DAILY`
+3. `PRODUCT_MASTER`
+4. `INVENTORY`
+5. `PRODUCT_FACT`
+
+The Phase 4 implementation includes, as applicable per Slice:
+
+- typed PHASE 3 `ToolResult` ingestion boundaries
+- deterministic source/SKU resolution policies
+- deterministic mapping or direct-SKU referential strategies
+- source provenance
+- natural keys
+- canonical business hashes
+- source ingestion identities
+- duplicate/conflict classification
+- a contract-scoped shared publisher
+- cross-contract isolation
+- fail-closed validation
+- non-publishable batch state preservation
+- idempotency
+- timezone-aware `created_at`
+- `run_id` correlation
+- optional `task_id` correlation where supplied
+
+`PRODUCT_FACT` does not perform external SKU mapping. It uses direct internal SKU input, mandatory `known_skus` referential validation, and a referential-context-bound fingerprint. Its policy is UNVERIFIED candidate ingestion only: the Adapter does not verify truth, create VERIFIED facts, or implement the later independent verification lifecycle. Fact IDs are issued through `topspeed_ai_os.core.ids`; package-root export through `topspeed_ai_os.core` is not part of this Slice.
+
+PRODUCT_FACT evidence:
+
+- ADR commit: `8dbf27eef4e8831a4d8be259e2977830fbb0d5bb`
+- Implementation commit: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- Audit1 implementation audit: PASS
+- Audit2 independent implementation audit: PASS
+- Publication Gate: PASS
+- Remote published audit HEAD: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+
+These five Slices are synthetic/internal architecture proofs. They do not establish production persistence, production business-data synchronization, or a complete AI employee system. PHASE 4 implementation is IN PROGRESS and PHASE 4 overall is NOT COMPLETE.
 
 ## TESTED
+
+### Historical PHASE 3 evidence
 
 Implementation baseline commit:
 
@@ -96,6 +146,25 @@ Results:
 HANDOFF publication commit: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
 
 Publication CI run: `35581694098` = PASS
+
+### Latest PHASE 4 publication evidence
+
+- Canonical implementation baseline: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- Latest audited local full suite: 1283 passed / 0 failed
+- Publication-diff audit: 0 newly introduced skip, 0 newly introduced skipif, 0 newly introduced xfail
+- Workflow: `Phase 2 Contract CI`
+- Run: `36672337676`
+- URL: <https://github.com/topspeedcare-gif/topspeed-ai-os/actions/runs/36672337676>
+- Event: push
+- Head SHA: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- Overall conclusion: SUCCESS
+- `quality` job: SUCCESS
+- Install: SUCCESS
+- Lint: SUCCESS
+- Format: SUCCESS
+- Contract tests / pytest: SUCCESS — 1283 passed
+- `secret-scan` job: SUCCESS
+- gitleaks: SUCCESS
 
 CI PASS and operational LIVE PASS are separate evidence classes.
 
@@ -196,6 +265,8 @@ BLOCKED means an actual source request could not be reached because a prerequisi
 
 Authentication re-entry for both sources is resolved. No current authentication blocker remains.
 
+No current PHASE 4 prerequisite is known to be blocked, and PRODUCT_FACT publication is not blocked. PHASE 4 overall remains NOT COMPLETE because its scope is incomplete, not because it is blocked.
+
 ## UNKNOWN / INSUFFICIENT EVIDENCE
 
 - Exact credential/account-side root cause of the Coupang HTTP 401
@@ -217,40 +288,75 @@ Expired token, wrong account, wrong scope, API configuration, and Codex defect r
 6. GitHub Actions produced Node.js deprecation warnings. These warnings did not fail the audited CI run.
 7. The workflow name remains `Phase 2 Contract CI` even though its current verification scope includes later work, creating possible operational naming confusion.
 8. During the 2026-09-21 laptop Evidence Gate, the canonical Python launcher was reported unavailable in that execution context. Root cause is not established. During that Evidence Gate, docs-only UTF-8 validation used a strict .NET UTF-8 decoder. This environment/tooling WARN is separate from historical HTTP 401 results and current operational LIVE PASS results.
+9. The five published Phase 4 Slices are synthetic/internal architecture proofs, not production persistence or production synchronization.
 
 These limitations and risks do not change the current Drive or Coupang operational PASS.
 
 ## RE-ENTRY CONDITIONS
 
-- Google Drive authentication re-entry = RESOLVED
-- Coupang authentication re-entry = RESOLVED
-- No repeated LIVE call without a new operational reason.
-- Future credential rotation or expiry requires a new bounded Source-specific Gate.
-- Any future LIVE remains read-only, fail-closed, and bounded.
-- Reconfirm branch, actual Git HEAD, CANONICAL implementation baseline, and working tree before future execution.
-- Drive and Coupang future Gates remain independent.
+- Resolve the actual branch and HEAD before every execution.
+- Verify working tree state before every execution.
+- Preserve Frozen documents and Data Contract authority.
+- The next Phase 4 Slice requires its own Architecture Gate.
+- Do not enter PHASE 5 before an explicit PHASE 4 completion decision and authorization.
+- Future LIVE remains Source-specific, bounded, read-only unless separately authorized, and fail-closed.
+- Do not repeat a LIVE call without a new operational reason.
+- Future credential rotation or expiry requires a bounded Source-specific Gate.
+- Google Drive authentication re-entry = RESOLVED.
+- Coupang authentication re-entry = RESOLVED.
+- Drive and Coupang future operational Gates remain independent.
 - Operator-provided Drive scope issuance evidence does not constitute independent actual token scope introspection.
 
 ## FORBIDDEN NEXT ACTIONS
 
-- PHASE 4 implementation before its explicit entry Gate
+- Next Phase 4 Slice implementation without its separate Architecture Gate
+- Declaring PHASE 4 complete without explicit completion reevaluation
+- PHASE 5 implementation before PHASE 4 completion authorization
 - Main merge or main push without separate approval
-- Frozen document modification
-- Unapproved write
+- Frozen document modification without an explicit architecture process
+- Unapproved external write
 - Repeat Drive or Coupang LIVE without a new operational reason
 - Credential, identifier, or raw payload values in repository docs or logs
 - Mock success represented as operational LIVE PASS
 - LINER implementation in the current scope
 - Unrelated dependency addition
 
+## EXPLICIT NOT-IMPLEMENTED BOUNDARY
+
+The following are not complete or not implemented:
+
+- PHASE 4 overall
+- production database persistence
+- actual TOPSPEED business-data ingestion
+- Google Sheets production synchronization
+- production Data Hub synchronization
+- `CONTENT_ASSET` Adapter
+- `APPROVAL_QUEUE` execution engine
+- `AI_RUN_LOG` execution engine
+- HQ Orchestrator
+- Skill Router
+- six specialized Skills
+- independent Audit Layer
+- advertising write adapter
+- pricing write adapter
+- purchase/order write adapter
+- PHASE 5 deterministic calculation engine
+
+The current repository must not be described as a complete AI OS, complete AI employee system, or production-ready autonomous commerce system. Current PHASE 4 status is IN PROGRESS.
+
 ## NEXT GATE
 
-1. PHASE 3 aggregate HANDOFF update
-2. Independent HANDOFF publication audit
-3. Docs-only publication
-4. PHASE 4 explicit entry Gate
+1. PHASE 4 CURRENT_PHASE_HANDOFF docs-only update
+2. Independent HANDOFF audit
+3. Docs-only HANDOFF publication
+4. Separate Architecture Gate for the next PHASE 4 Slice
+5. PHASE 4 completion-condition reevaluation
 
-PHASE 3 overall = PASS. PHASE 4 entry = PENDING EXPLICIT GATE; PHASE 4 implementation = NOT STARTED.
+No next Slice is selected or authorized by this document.
+
+PHASE 4 overall = NOT COMPLETE
+
+PHASE 5 = NOT STARTED
 
 ## LAST AUDIT RESULT
 
@@ -267,10 +373,19 @@ PHASE 3 overall = PASS. PHASE 4 entry = PENDING EXPLICIT GATE; PHASE 4 implement
 - PHASE 3 operational verification = PASS
 - PHASE 3 final aggregate audit = PASS
 - PHASE 3 overall = PASS
-- PHASE 4 entry = PENDING EXPLICIT GATE
-- PHASE 4 implementation = NOT STARTED
+- PHASE 4 entry = COMPLETE / AUTHORIZED
+- PHASE 4 synthetic slices published = `AD_DAILY`, `CHANNEL_DAILY`, `PRODUCT_MASTER`, `INVENTORY`, `PRODUCT_FACT`
+- PRODUCT_FACT ADR = PASS / PUBLISHED
+- PRODUCT_FACT implementation Audit1 = PASS
+- PRODUCT_FACT implementation Audit2 = PASS
+- PRODUCT_FACT Publication Gate = PASS
+- PRODUCT_FACT publication CI = PASS
+- PRODUCT_FACT remote implementation HEAD = `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- PHASE 4 implementation = IN PROGRESS
+- PHASE 4 overall = NOT COMPLETE
+- PHASE 5 = NOT STARTED
 
-PHASE 3 PASS does not authorize PHASE 4 entry.
+PHASE 4 entry was separately authorized; PHASE 3 PASS alone did not provide that authorization.
 
 ## OPERATING RULES
 
@@ -284,5 +399,5 @@ PHASE 3 PASS does not authorize PHASE 4 entry.
 8. Repository source and Frozen documents override HANDOFF on conflict.
 9. HANDOFF updates require independent audit before publication.
 10. Presence of this document never authorizes the next phase.
-11. CANONICAL HEAD is an implementation/evidence baseline, not necessarily the current Git branch HEAD.
+11. CANONICAL IMPLEMENTATION HEAD is an implementation/evidence baseline, not necessarily the current Git branch HEAD.
 12. Actual Git branch HEAD must be independently resolved at the beginning of every execution task.
