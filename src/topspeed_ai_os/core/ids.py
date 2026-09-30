@@ -13,6 +13,7 @@ _PREFIX_PATTERNS = {
     "run": re.compile(rf"^run_{_ULID_PATTERN}$"),
     "apr": re.compile(rf"^apr_{_ULID_PATTERN}$"),
     "idem": re.compile(rf"^idem_{_ULID_PATTERN}$"),
+    "fact": re.compile(rf"^fact_{_ULID_PATTERN}$"),
 }
 _SKU_PATTERN = re.compile(r"^[A-Z0-9]+(?:-[A-Z0-9]+)+$")
 _SKU_SEGMENT_CLEANER = re.compile(r"[^A-Z0-9]+")
@@ -64,6 +65,10 @@ def generate_idempotency_key() -> str:
     return _generate_prefixed("idem")
 
 
+def generate_fact_id() -> str:
+    return _generate_prefixed("fact")
+
+
 def generate_sku(*segments: str) -> str:
     """Build an internal SKU from at least two explicit, non-empty segments."""
 
@@ -93,6 +98,10 @@ def validate_idempotency_key(value: object) -> bool:
     return _validate_prefixed(value, "idem")
 
 
+def validate_fact_id(value: object) -> bool:
+    return _validate_prefixed(value, "fact")
+
+
 def validate_sku(value: object) -> bool:
     return isinstance(value, str) and _SKU_PATTERN.fullmatch(value) is not None
 
@@ -117,6 +126,10 @@ def require_valid_approval_id(value: str) -> str:
 
 def require_valid_idempotency_key(value: str) -> str:
     return _require(value, validate_idempotency_key, "idempotency_key")
+
+
+def require_valid_fact_id(value: str) -> str:
+    return _require(value, validate_fact_id, "fact_id")
 
 
 def require_valid_sku(value: str) -> str:
