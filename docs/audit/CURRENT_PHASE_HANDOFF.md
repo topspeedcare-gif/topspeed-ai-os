@@ -346,9 +346,9 @@ The current repository must not be described as a complete AI OS, complete AI em
 
 ## NEXT GATE
 
-1. PHASE 4 CURRENT_PHASE_HANDOFF docs-only update
-2. Independent HANDOFF audit
-3. Docs-only HANDOFF publication
+1. Independent Handoff Audit1
+2. Audit2 independent Handoff review
+3. Docs-only publication
 4. Separate Architecture Gate for the next PHASE 4 Slice
 5. PHASE 4 completion-condition reevaluation
 
