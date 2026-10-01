@@ -337,6 +337,315 @@ def test_schema_invalid_states_stop_before_transition_logic():
     assert not decision.executable
 
 
+STEP1_SOURCE_ROOT = (
+    Path(__file__).resolve().parents[1] / "src" / "topspeed_ai_os" / "development_workflow"
+)
+
+_APPROVED_IMPORTS_BY_FILE = {
+    "__init__.py": frozenset(
+        {
+            "__future__.annotations",
+            ".schema_validator.ValidationDiagnostic",
+            ".schema_validator.ValidationResult",
+            ".schema_validator.compute_idempotency_key",
+            ".schema_validator.compute_scope_hash",
+            ".schema_validator.validate_workflow_state",
+            ".state_machine.TransitionDecision",
+            ".state_machine.evaluate_transition",
+        }
+    ),
+    "schema_validator.py": frozenset(
+        {
+            "__future__.annotations",
+            "collections.abc.Mapping",
+            "collections.abc.Sequence",
+            "dataclasses.dataclass",
+            "hashlib",
+            "json",
+            "jsonschema.Draft202012Validator",
+            "jsonschema.FormatChecker",
+            "jsonschema.SchemaError",
+            "pathlib.Path",
+            "re",
+            "typing.Any",
+        }
+    ),
+    "state_machine.py": frozenset(
+        {
+            "__future__.annotations",
+            ".schema_validator.ValidationDiagnostic",
+            ".schema_validator.compute_idempotency_key",
+            ".schema_validator.validate_workflow_state",
+            "collections.abc.Mapping",
+            "dataclasses.dataclass",
+            "typing.Any",
+        }
+    ),
+}
+_APPROVED_IMPORTS = frozenset().union(*_APPROVED_IMPORTS_BY_FILE.values())
+
+_APPROVED_DEFINITIONS_BY_FILE = {
+    "__init__.py": frozenset(),
+    "schema_validator.py": frozenset(
+        {
+            "ValidationDiagnostic",
+            "ValidationResult",
+            "ValidationResult.valid",
+            "_canonical_sha256",
+            "_canonical_string_array",
+            "_error_key",
+            "_format_path",
+            "_is_safe_path",
+            "_load_schema",
+            "_require_field",
+            "_require_mapping",
+            "_require_non_empty_string",
+            "_require_pattern",
+            "compute_idempotency_key",
+            "compute_scope_hash",
+            "validate_workflow_state",
+        }
+    ),
+    "state_machine.py": frozenset(
+        {
+            "TransitionDecision",
+            "_decision",
+            "_diagnostic",
+            "_idempotency_errors",
+            "_schema_errors",
+            "_state_invariants",
+            "evaluate_transition",
+        }
+    ),
+}
+
+_APPROVED_EXTERNAL_CALLS = frozenset(
+    {
+        ".schema_validator.ValidationDiagnostic",
+        ".schema_validator.compute_idempotency_key",
+        ".schema_validator.validate_workflow_state",
+        "dataclasses.dataclass",
+        "hashlib.sha256",
+        "json.dumps",
+        "json.load",
+        "jsonschema.Draft202012Validator",
+        "jsonschema.Draft202012Validator.check_schema",
+        "jsonschema.FormatChecker",
+        "jsonschema.SchemaError",
+        "pathlib.Path",
+        "re.compile",
+    }
+)
+_APPROVED_BUILTIN_CALLS = frozenset(
+    {
+        "ValueError",
+        "bool",
+        "enumerate",
+        "frozenset",
+        "isinstance",
+        "set",
+        "sorted",
+        "str",
+        "tuple",
+        "type",
+    }
+)
+_APPROVED_METHOD_CALLS = frozenset(
+    {
+        "_SCHEMA_PATH.resolve",
+        "diagnostics.append",
+        "errors.append",
+        "errors.extend",
+        "hashlib.sha256().hexdigest",
+        "items.append",
+        "join",
+        "json.dumps().encode",
+        "jsonschema.Draft202012Validator().iter_errors",
+        "path.split",
+        "path.startswith",
+        "pathlib.Path().resolve",
+        "pattern.fullmatch",
+        "re.compile().match",
+    }
+)
+_DYNAMIC_ESCAPE_CALLS = frozenset(
+    {"__import__", "compile", "eval", "exec", "getattr", "globals", "locals"}
+)
+
+
+def _import_origin(node: ast.ImportFrom, imported_name: str) -> str:
+    module = f"{'.' * node.level}{node.module or ''}"
+    return f"{module}.{imported_name}" if module else imported_name
+
+
+def _bound_name(alias: ast.alias, *, from_import: bool) -> str:
+    if alias.asname:
+        return alias.asname
+    return alias.name if from_import else alias.name.split(".", 1)[0]
+
+
+class Step1BoundaryAnalyzer(ast.NodeVisitor):
+    """Fail-closed, test-only capability analysis for the approved STEP 1 runtime."""
+
+    def __init__(self, filename: str) -> None:
+        self.filename = filename
+        self.allowed_imports = _APPROVED_IMPORTS_BY_FILE.get(filename, _APPROVED_IMPORTS)
+        self.allowed_definitions = _APPROVED_DEFINITIONS_BY_FILE.get(filename, frozenset())
+        self.aliases: dict[str, str] = {}
+        self.local_definitions: set[str] = set()
+        self.violations: list[str] = []
+        self._class_stack: list[str] = []
+
+    def analyze(self, source: str) -> tuple[str, ...]:
+        tree = ast.parse(source, filename=self.filename)
+        self._collect_import_aliases(tree)
+        self._collect_assignment_aliases(tree)
+        self.visit(tree)
+        return tuple(sorted(set(self.violations)))
+
+    def _violation(self, node: ast.AST, category: str, detail: str) -> None:
+        self.violations.append(f"{category}:{getattr(node, 'lineno', 0)}:{detail}")
+
+    def _collect_import_aliases(self, tree: ast.AST) -> None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    origin = alias.name
+                    if origin not in self.allowed_imports:
+                        self._violation(node, "IMPORT", origin)
+                    binding = _bound_name(alias, from_import=False)
+                    self.aliases[binding] = origin if alias.asname else binding
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    origin = _import_origin(node, alias.name)
+                    if alias.name == "*" or origin not in self.allowed_imports:
+                        self._violation(node, "IMPORT", origin)
+                    self.aliases[_bound_name(alias, from_import=True)] = origin
+
+    def _collect_assignment_aliases(self, tree: ast.AST) -> None:
+        assignments: list[tuple[ast.AST, ast.AST]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                assignments.extend((target, node.value) for target in node.targets)
+            elif isinstance(node, ast.AnnAssign) and node.value is not None:
+                assignments.append((node.target, node.value))
+        for _ in range(len(assignments) + 1):
+            changed = False
+            for target, value in assignments:
+                if not isinstance(target, ast.Name):
+                    continue
+                origin = self._resolve(value)
+                if not origin or origin == target.id or self.aliases.get(target.id) == origin:
+                    continue
+                if self._root_name(value) in self.aliases:
+                    self.aliases[target.id] = origin
+                    changed = True
+            if not changed:
+                break
+
+    def _resolve(self, node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return self.aliases.get(node.id, node.id)
+        if isinstance(node, ast.Attribute):
+            parent = self._resolve(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        if isinstance(node, ast.Call):
+            called = self._resolve(node.func)
+            return f"{called}()" if called else ""
+        if isinstance(node, ast.Subscript):
+            return self._resolve(node.value)
+        return ""
+
+    @staticmethod
+    def _root_name(node: ast.AST) -> str | None:
+        while isinstance(node, (ast.Attribute, ast.Call, ast.Subscript)):
+            node = node.value if isinstance(node, (ast.Attribute, ast.Subscript)) else node.func
+        return node.id if isinstance(node, ast.Name) else None
+
+    def _definition_name(self, name: str) -> str:
+        return ".".join((*self._class_stack, name))
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        qualified = self._definition_name(node.name)
+        self.local_definitions.add(node.name)
+        if qualified not in self.allowed_definitions:
+            self._violation(node, "DEFINITION", qualified)
+        self._class_stack.append(node.name)
+        self.generic_visit(node)
+        self._class_stack.pop()
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        qualified = self._definition_name(node.name)
+        self.local_definitions.add(node.name)
+        if qualified not in self.allowed_definitions:
+            self._violation(node, "DEFINITION", qualified)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._violation(node, "DEFINITION", self._definition_name(node.name))
+        self.generic_visit(node)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._violation(node, "DEFINITION", "lambda")
+        self.generic_visit(node)
+
+    def _check_schema_open(self, node: ast.Call, called: str) -> None:
+        mode = node.args[0].value if node.args and isinstance(node.args[0], ast.Constant) else None
+        encoding_values = [
+            keyword.value.value
+            for keyword in node.keywords
+            if keyword.arg == "encoding" and isinstance(keyword.value, ast.Constant)
+        ]
+        if called != "schema_path.open":
+            self._violation(node, "FILE_PATH", called)
+        if mode != "r":
+            self._violation(node, "FILE_MODE", repr(mode))
+        if encoding_values != ["utf-8"] or any(
+            keyword.arg not in {"encoding"} for keyword in node.keywords
+        ):
+            self._violation(node, "FILE_ENCODING", called)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        called = self._resolve(node.func)
+        raw_called = self._resolve_without_aliases(node.func)
+        direct_name = node.func.id if isinstance(node.func, ast.Name) else None
+        method = node.func.attr if isinstance(node.func, ast.Attribute) else None
+
+        if direct_name in _DYNAMIC_ESCAPE_CALLS or called.split(".", 1)[0] in {
+            "importlib",
+            "__import__",
+        }:
+            self._violation(node, "DYNAMIC", called)
+        elif method == "open" or direct_name == "open" or called == "io.open":
+            self._check_schema_open(node, raw_called)
+        elif (
+            called in _APPROVED_EXTERNAL_CALLS
+            or called in _APPROVED_METHOD_CALLS
+            or direct_name in _APPROVED_BUILTIN_CALLS
+            or direct_name in self.local_definitions
+        ):
+            pass
+        else:
+            self._violation(node, "CALL", called or ast.dump(node.func, include_attributes=False))
+        self.generic_visit(node)
+
+    @staticmethod
+    def _resolve_without_aliases(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = Step1BoundaryAnalyzer._resolve_without_aliases(node.value)
+            return f"{parent}.{node.attr}" if parent else node.attr
+        if isinstance(node, ast.Call):
+            called = Step1BoundaryAnalyzer._resolve_without_aliases(node.func)
+            return f"{called}()" if called else ""
+        return ""
+
+
+def analyze_step1_boundary(source: str, filename: str = "<synthetic>") -> tuple[str, ...]:
+    return Step1BoundaryAnalyzer(filename).analyze(source)
+
+
 class FakeRunner:
     """Test-only fixture returning one predefined deterministic result."""
 
@@ -474,6 +783,142 @@ def test_step1_runtime_has_no_forbidden_execution_or_file_mutation_call():
         and keyword.value.value == "utf-8"
         for keyword in schema_open.keywords
     )
+
+
+@pytest.mark.parametrize(
+    "runtime_path",
+    sorted(STEP1_SOURCE_ROOT.glob("*.py")),
+    ids=lambda path: path.name,
+)
+def test_strict_boundary_analyzer_accepts_current_step1_runtime(runtime_path):
+    source = runtime_path.read_text(encoding="utf-8")
+    assert analyze_step1_boundary(source, runtime_path.name) == ()
+
+
+@pytest.mark.parametrize(
+    ("case", "source"),
+    [
+        (
+            "network alternative",
+            'import http.client as hc\nhc.HTTPSConnection("example.com")',
+        ),
+        (
+            "file-write alias",
+            'from io import open as fopen\nfopen("x.txt", "w")',
+        ),
+        (
+            "credential capability",
+            'import keyring\nkeyring.get_password("service", "user")',
+        ),
+        (
+            "Git alternative",
+            'from dulwich.repo import Repo\nRepo(".")',
+        ),
+        (
+            "business execution alias",
+            "from arbitrary_business_module import dispatch as execute\nexecute()",
+        ),
+        (
+            "Runner synonym",
+            "class Executor:\n    def execute(self):\n        pass\n\nExecutor().execute()",
+        ),
+    ],
+)
+def test_strict_boundary_analyzer_rejects_required_mutations(case, source):
+    violations = analyze_step1_boundary(source)
+    assert violations, case
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hashlib as hashing\nhashing.sha256(b"x").hexdigest()',
+        'from pathlib import Path as ImportedPath\nImportedPath("state.json")',
+        (
+            "from pathlib import Path as ImportedPath\n"
+            "PathAlias = ImportedPath\n"
+            'PathAlias("state.json")'
+        ),
+    ],
+)
+def test_strict_boundary_analyzer_normalizes_approved_import_aliases(source):
+    assert analyze_step1_boundary(source) == ()
+
+
+def test_strict_boundary_analyzer_rejects_unknown_import_by_default():
+    violations = analyze_step1_boundary("import apparently_harmless_module")
+    assert any(item.startswith("IMPORT:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'import hashlib as hashing\nhashing.new("sha256")',
+        "MysteryClient()",
+        "executor.resolve()",
+    ],
+)
+def test_strict_boundary_analyzer_rejects_unknown_call_or_constructor(source):
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("CALL:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'eval("1 + 1")',
+        'exec("pass")',
+        'compile("pass", "<memory>", "exec")',
+        '__import__("module")',
+        'import importlib\nimportlib.import_module("module")',
+        "globals()",
+        "locals()",
+        'getattr(target, "execute")()',
+    ],
+)
+def test_strict_boundary_analyzer_rejects_dynamic_escape_hatches(source):
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("DYNAMIC:") for item in violations)
+
+
+def test_strict_boundary_analyzer_rejects_dynamic_file_mode():
+    source = 'schema_path.open(mode, encoding="utf-8")'
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("FILE_MODE:") for item in violations)
+
+
+@pytest.mark.parametrize("mode", ["w", "a", "x", "r+", "w+", "a+", "x+"])
+def test_strict_boundary_analyzer_rejects_file_mutation_modes(mode):
+    source = f'schema_path.open("{mode}", encoding="utf-8")'
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("FILE_MODE:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "mkdir",
+        "remove",
+        "rename",
+        "replace",
+        "rmdir",
+        "touch",
+        "unlink",
+        "write",
+        "write_bytes",
+        "write_text",
+        "writelines",
+    ],
+)
+def test_strict_boundary_analyzer_rejects_file_mutation_methods(method):
+    source = f'path.{method}("payload")'
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("CALL:") for item in violations)
+
+
+def test_strict_boundary_analyzer_allows_published_schema_utf8_read_only_open():
+    source = 'schema_path.open("r", encoding="utf-8")'
+    assert analyze_step1_boundary(source) == ()
 
 
 def test_fake_runner_has_no_external_or_nondeterministic_dependency():
