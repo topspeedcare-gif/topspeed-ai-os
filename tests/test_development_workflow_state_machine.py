@@ -484,6 +484,16 @@ def _bound_name(alias: ast.alias, *, from_import: bool) -> str:
     return alias.name if from_import else alias.name.split(".", 1)[0]
 
 
+def _bound_target_names(target: ast.AST) -> tuple[tuple[str, ast.AST], ...]:
+    if isinstance(target, ast.Name):
+        return ((target.id, target),)
+    if isinstance(target, ast.Starred):
+        return _bound_target_names(target.value)
+    if isinstance(target, (ast.List, ast.Tuple)):
+        return tuple(item for element in target.elts for item in _bound_target_names(element))
+    return ()
+
+
 class Step1BoundaryAnalyzer(ast.NodeVisitor):
     """Fail-closed, test-only capability analysis for the approved STEP 1 runtime."""
 
@@ -492,14 +502,18 @@ class Step1BoundaryAnalyzer(ast.NodeVisitor):
         self.allowed_imports = _APPROVED_IMPORTS_BY_FILE.get(filename, _APPROVED_IMPORTS)
         self.allowed_definitions = _APPROVED_DEFINITIONS_BY_FILE.get(filename, frozenset())
         self.aliases: dict[str, str] = {}
+        self.import_bindings: set[str] = set()
         self.local_definitions: set[str] = set()
         self.violations: list[str] = []
         self._class_stack: list[str] = []
+        self._approved_schema_opens: set[int] = set()
 
     def analyze(self, source: str) -> tuple[str, ...]:
         tree = ast.parse(source, filename=self.filename)
         self._collect_import_aliases(tree)
         self._collect_assignment_aliases(tree)
+        self._collect_shadowed_approved_names(tree)
+        self._check_schema_provenance(tree)
         self.visit(tree)
         return tuple(sorted(set(self.violations)))
 
@@ -514,13 +528,16 @@ class Step1BoundaryAnalyzer(ast.NodeVisitor):
                     if origin not in self.allowed_imports:
                         self._violation(node, "IMPORT", origin)
                     binding = _bound_name(alias, from_import=False)
+                    self.import_bindings.add(binding)
                     self.aliases[binding] = origin if alias.asname else binding
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     origin = _import_origin(node, alias.name)
                     if alias.name == "*" or origin not in self.allowed_imports:
                         self._violation(node, "IMPORT", origin)
-                    self.aliases[_bound_name(alias, from_import=True)] = origin
+                    binding = _bound_name(alias, from_import=True)
+                    self.import_bindings.add(binding)
+                    self.aliases[binding] = origin
 
     def _collect_assignment_aliases(self, tree: ast.AST) -> None:
         assignments: list[tuple[ast.AST, ast.AST]] = []
@@ -542,6 +559,213 @@ class Step1BoundaryAnalyzer(ast.NodeVisitor):
                     changed = True
             if not changed:
                 break
+
+    def _collect_shadowed_approved_names(self, tree: ast.AST) -> None:
+        approved_names = set(_APPROVED_BUILTIN_CALLS) | self.import_bindings
+        bindings: list[tuple[str, ast.AST]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.arg):
+                bindings.append((node.arg, node))
+            elif isinstance(node, ast.Assign):
+                bindings.extend(
+                    item for target in node.targets for item in _bound_target_names(target)
+                )
+            elif isinstance(
+                node, (ast.AnnAssign, ast.NamedExpr, ast.For, ast.AsyncFor, ast.comprehension)
+            ):
+                bindings.extend(_bound_target_names(node.target))
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                for item in node.items:
+                    if item.optional_vars is not None:
+                        bindings.extend(_bound_target_names(item.optional_vars))
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                bindings.append((node.name, node))
+        for name, node in bindings:
+            if name in approved_names:
+                self._violation(node, "SHADOWED_APPROVED_NAME", name)
+
+    @staticmethod
+    def _assignment_pairs(tree: ast.AST) -> tuple[tuple[ast.AST, ast.AST], ...]:
+        pairs: list[tuple[ast.AST, ast.AST]] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                pairs.extend((target, node.value) for target in node.targets)
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                pairs.append((node.target, node.value))
+        return tuple(pairs)
+
+    @staticmethod
+    def _is_schema_loader_call(node: ast.Call) -> bool:
+        return isinstance(node.func, ast.Name) and node.func.id == "_load_schema"
+
+    @staticmethod
+    def _is_schema_origin(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "_SCHEMA_PATH"
+            and node.func.attr == "resolve"
+            and not node.args
+            and not node.keywords
+        )
+
+    @staticmethod
+    def _is_schema_open(node: ast.Call) -> bool:
+        return (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "schema_path"
+            and node.func.attr == "open"
+        )
+
+    @staticmethod
+    def _has_exact_read_arguments(node: ast.Call) -> bool:
+        return (
+            len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "r"
+            and len(node.keywords) == 1
+            and node.keywords[0].arg == "encoding"
+            and isinstance(node.keywords[0].value, ast.Constant)
+            and node.keywords[0].value.value == "utf-8"
+        )
+
+    def _check_schema_provenance(self, tree: ast.Module) -> None:
+        schema_surface = any(
+            (isinstance(node, ast.Name) and node.id == "_SCHEMA_PATH")
+            or (isinstance(node, ast.FunctionDef) and node.name == "_load_schema")
+            or (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "open"
+            )
+            for node in ast.walk(tree)
+        )
+        if not schema_surface:
+            return
+
+        module_schema_assignments: list[ast.AST] = []
+        loader_definitions: list[ast.FunctionDef] = []
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign):
+                if any(
+                    isinstance(target, ast.Name) and target.id == "_SCHEMA_PATH"
+                    for target in statement.targets
+                ):
+                    module_schema_assignments.append(statement)
+            elif (
+                isinstance(statement, ast.AnnAssign)
+                and isinstance(statement.target, ast.Name)
+                and statement.target.id == "_SCHEMA_PATH"
+            ):
+                module_schema_assignments.append(statement)
+            elif isinstance(statement, ast.FunctionDef) and statement.name == "_load_schema":
+                loader_definitions.append(statement)
+
+        valid = True
+        if len(module_schema_assignments) != 1:
+            self._violation(tree, "FILE_PROVENANCE", "_SCHEMA_PATH_BINDING")
+            valid = False
+
+        schema_binding_count = 0
+        schema_aliases: list[ast.AST] = []
+        for target, value in self._assignment_pairs(tree):
+            for name, bound_node in _bound_target_names(target):
+                if name == "_SCHEMA_PATH":
+                    schema_binding_count += 1
+                elif self._root_name(value) == "_SCHEMA_PATH":
+                    schema_aliases.append(bound_node)
+        if schema_binding_count != 1:
+            self._violation(tree, "FILE_PROVENANCE", "_SCHEMA_PATH_REASSIGNED")
+            valid = False
+        for node in schema_aliases:
+            self._violation(node, "FILE_PROVENANCE", "_SCHEMA_PATH_ALIASED")
+            valid = False
+
+        if len(loader_definitions) != 1:
+            self._violation(tree, "FILE_PROVENANCE", "_load_schema_DEFINITION")
+            return
+        loader = loader_definitions[0]
+        parameters = (
+            *loader.args.posonlyargs,
+            *loader.args.args,
+            *loader.args.kwonlyargs,
+        )
+        if (
+            [parameter.arg for parameter in parameters] != ["schema_path"]
+            or loader.args.vararg is not None
+            or loader.args.kwarg is not None
+        ):
+            self._violation(loader, "FILE_PROVENANCE", "schema_path_PARAMETER")
+            valid = False
+
+        schema_path_rebindings: list[ast.AST] = []
+        schema_path_aliases: list[ast.AST] = []
+        for node in ast.walk(loader):
+            binding_targets: tuple[tuple[str, ast.AST], ...] = ()
+            if isinstance(node, ast.Assign):
+                binding_targets = tuple(
+                    item for target in node.targets for item in _bound_target_names(target)
+                )
+            elif isinstance(
+                node, (ast.AnnAssign, ast.NamedExpr, ast.For, ast.AsyncFor, ast.comprehension)
+            ):
+                binding_targets = _bound_target_names(node.target)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                binding_targets = tuple(
+                    item
+                    for with_item in node.items
+                    if with_item.optional_vars is not None
+                    for item in _bound_target_names(with_item.optional_vars)
+                )
+            elif isinstance(node, ast.ExceptHandler) and node.name:
+                binding_targets = ((node.name, node),)
+            for name, bound_node in binding_targets:
+                if name == "schema_path":
+                    schema_path_rebindings.append(bound_node)
+            if isinstance(node, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if self._root_name(value) == "schema_path":
+                    schema_path_aliases.extend(
+                        bound_node
+                        for target in targets
+                        for name, bound_node in _bound_target_names(target)
+                        if name != "schema_path"
+                    )
+        for node in schema_path_rebindings:
+            self._violation(node, "FILE_PROVENANCE", "schema_path_REASSIGNED")
+            valid = False
+        for node in schema_path_aliases:
+            self._violation(node, "FILE_PROVENANCE", "schema_path_ALIASED")
+            valid = False
+
+        schema_opens = [
+            node
+            for node in ast.walk(loader)
+            if isinstance(node, ast.Call) and self._is_schema_open(node)
+        ]
+        if len(schema_opens) != 1 or not self._has_exact_read_arguments(schema_opens[0]):
+            self._violation(loader, "FILE_PROVENANCE", "schema_path_OPEN")
+            valid = False
+
+        loader_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and self._is_schema_loader_call(node)
+        ]
+        if (
+            len(loader_calls) != 1
+            or len(loader_calls[0].args) != 1
+            or loader_calls[0].keywords
+            or not self._is_schema_origin(loader_calls[0].args[0])
+        ):
+            self._violation(tree, "FILE_PROVENANCE", "_load_schema_CALLER")
+            valid = False
+
+        if valid:
+            self._approved_schema_opens.add(id(schema_opens[0]))
 
     def _resolve(self, node: ast.AST) -> str:
         if isinstance(node, ast.Name):
@@ -596,8 +820,8 @@ class Step1BoundaryAnalyzer(ast.NodeVisitor):
             for keyword in node.keywords
             if keyword.arg == "encoding" and isinstance(keyword.value, ast.Constant)
         ]
-        if called != "schema_path.open":
-            self._violation(node, "FILE_PATH", called)
+        if id(node) not in self._approved_schema_opens:
+            self._violation(node, "FILE_PROVENANCE", called)
         if mode != "r":
             self._violation(node, "FILE_MODE", repr(mode))
         if encoding_values != ["utf-8"] or any(
@@ -795,6 +1019,209 @@ def test_strict_boundary_analyzer_accepts_current_step1_runtime(runtime_path):
     assert analyze_step1_boundary(source, runtime_path.name) == ()
 
 
+_BOUNDED_SCHEMA_SOURCE = """\
+from pathlib import Path
+
+_SCHEMA_PATH = Path("published-schema.json")
+
+def _load_schema(schema_path):
+    with schema_path.open("r", encoding="utf-8") as handle:
+        return handle
+
+_load_schema(_SCHEMA_PATH.resolve())
+"""
+
+
+def test_strict_boundary_analyzer_accepts_complete_bounded_schema_chain():
+    assert analyze_step1_boundary(_BOUNDED_SCHEMA_SOURCE, "schema_validator.py") == ()
+
+
+def test_strict_boundary_analyzer_rejects_arbitrary_schema_path_read():
+    source = (
+        "from pathlib import Path\n"
+        'schema_path = Path("not-the-published-schema.txt")\n'
+        'schema_path.open("r", encoding="utf-8")'
+    )
+    violations = analyze_step1_boundary(source)
+    assert any(item.startswith("FILE_PROVENANCE:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    ("case", "source", "detail"),
+    [
+        (
+            "_SCHEMA_PATH reassignment",
+            _BOUNDED_SCHEMA_SOURCE.replace(
+                "def _load_schema",
+                '_SCHEMA_PATH = Path("other-schema.json")\n\ndef _load_schema',
+            ),
+            "_SCHEMA_PATH_REASSIGNED",
+        ),
+        (
+            "_SCHEMA_PATH alias",
+            _BOUNDED_SCHEMA_SOURCE.replace(
+                "def _load_schema",
+                "schema_alias = _SCHEMA_PATH\n\ndef _load_schema",
+            ),
+            "_SCHEMA_PATH_ALIASED",
+        ),
+        (
+            "schema_path reassignment",
+            _BOUNDED_SCHEMA_SOURCE.replace(
+                '    with schema_path.open("r", encoding="utf-8") as handle:',
+                '    schema_path = Path("other-schema.json")\n'
+                '    with schema_path.open("r", encoding="utf-8") as handle:',
+            ),
+            "schema_path_REASSIGNED",
+        ),
+        (
+            "schema_path alias",
+            _BOUNDED_SCHEMA_SOURCE.replace(
+                '    with schema_path.open("r", encoding="utf-8") as handle:',
+                "    schema_alias = schema_path\n"
+                '    with schema_alias.open("r", encoding="utf-8") as handle:',
+            ),
+            "schema_path_ALIASED",
+        ),
+        (
+            "additional _load_schema caller",
+            _BOUNDED_SCHEMA_SOURCE + "\n_load_schema(_SCHEMA_PATH.resolve())\n",
+            "_load_schema_CALLER",
+        ),
+    ],
+)
+def test_strict_boundary_analyzer_rejects_broken_schema_provenance(case, source, detail):
+    violations = analyze_step1_boundary(source, "schema_validator.py")
+    assert any(
+        item.startswith("FILE_PROVENANCE:") and item.endswith(f":{detail}") for item in violations
+    ), case
+
+
+def test_strict_boundary_analyzer_rejects_file_open_outside_bounded_chain():
+    source = _BOUNDED_SCHEMA_SOURCE + '\n_SCHEMA_PATH.open("r", encoding="utf-8")\n'
+    violations = analyze_step1_boundary(source, "schema_validator.py")
+    assert any(item.startswith("FILE_PROVENANCE:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    ("case", "source", "category"),
+    [
+        (
+            "dynamic mode",
+            _BOUNDED_SCHEMA_SOURCE.replace(
+                'schema_path.open("r", encoding="utf-8")',
+                'schema_path.open(mode, encoding="utf-8")',
+            ),
+            "FILE_MODE",
+        ),
+        (
+            "non-UTF-8 encoding",
+            _BOUNDED_SCHEMA_SOURCE.replace('encoding="utf-8"', 'encoding="utf-16"'),
+            "FILE_ENCODING",
+        ),
+    ],
+)
+def test_strict_boundary_analyzer_rejects_broken_schema_read_arguments(case, source, category):
+    violations = analyze_step1_boundary(source, "schema_validator.py")
+    assert any(item.startswith(f"{category}:") for item in violations), case
+
+
+@pytest.mark.parametrize("mode", ["w", "a", "x", "r+", "w+", "a+", "x+"])
+def test_strict_boundary_analyzer_rejects_bounded_schema_mutation_modes(mode):
+    source = _BOUNDED_SCHEMA_SOURCE.replace(
+        'schema_path.open("r", encoding="utf-8")',
+        f'schema_path.open("{mode}", encoding="utf-8")',
+    )
+    violations = analyze_step1_boundary(source, "schema_validator.py")
+    assert any(item.startswith("FILE_MODE:") for item in violations)
+
+
+@pytest.mark.parametrize(
+    ("case", "binding", "source"),
+    [
+        (
+            "ordinary parameter",
+            "sorted",
+            "def compute_scope_hash(sorted):\n    sorted([])",
+        ),
+        (
+            "import parameter",
+            "json",
+            "import json\n\ndef validate_workflow_state(json):\n    json.dumps({})",
+        ),
+        (
+            "positional-only parameter",
+            "sorted",
+            "def compute_scope_hash(sorted, /):\n    sorted([])",
+        ),
+        (
+            "keyword-only parameter",
+            "sorted",
+            "def compute_scope_hash(*, sorted):\n    sorted([])",
+        ),
+        (
+            "varargs",
+            "sorted",
+            "def compute_scope_hash(*sorted):\n    sorted([])",
+        ),
+        (
+            "kwargs",
+            "sorted",
+            "def compute_scope_hash(**sorted):\n    sorted([])",
+        ),
+        (
+            "builtin local assignment",
+            "sorted",
+            "def compute_scope_hash():\n    sorted = callable_value\n    sorted([])",
+        ),
+        (
+            "import local assignment",
+            "json",
+            "import json\n\ndef validate_workflow_state():\n"
+            "    json = serializer\n    json.dumps({})",
+        ),
+        (
+            "annotated assignment",
+            "sorted",
+            "def compute_scope_hash():\n    sorted: object = callable_value\n    sorted([])",
+        ),
+        (
+            "named expression",
+            "sorted",
+            "def compute_scope_hash():\n    (sorted := callable_value)\n    sorted([])",
+        ),
+        (
+            "for target",
+            "sorted",
+            "def compute_scope_hash():\n    for sorted in values:\n        sorted([])",
+        ),
+        (
+            "with target",
+            "sorted",
+            "def compute_scope_hash():\n    with context_manager as sorted:\n        sorted([])",
+        ),
+        (
+            "exception alias",
+            "sorted",
+            "def compute_scope_hash():\n"
+            "    try:\n        pass\n"
+            "    except Exception as sorted:\n        sorted([])",
+        ),
+        (
+            "comprehension target",
+            "sorted",
+            "def compute_scope_hash():\n    return [sorted([]) for sorted in values]",
+        ),
+    ],
+)
+def test_strict_boundary_analyzer_rejects_approved_name_shadowing(case, binding, source):
+    violations = analyze_step1_boundary(source, "schema_validator.py")
+    shadowing = [item for item in violations if item.startswith("SHADOWED_APPROVED_NAME:")]
+    assert any(item.endswith(f":{binding}") for item in shadowing), case
+    assert not any(item.startswith("DEFINITION:") for item in violations), case
+    assert [item for item in violations if item not in shadowing] == [], case
+
+
 @pytest.mark.parametrize(
     ("case", "source"),
     [
@@ -917,8 +1344,7 @@ def test_strict_boundary_analyzer_rejects_file_mutation_methods(method):
 
 
 def test_strict_boundary_analyzer_allows_published_schema_utf8_read_only_open():
-    source = 'schema_path.open("r", encoding="utf-8")'
-    assert analyze_step1_boundary(source) == ()
+    assert analyze_step1_boundary(_BOUNDED_SCHEMA_SOURCE, "schema_validator.py") == ()
 
 
 def test_fake_runner_has_no_external_or_nondeterministic_dependency():
