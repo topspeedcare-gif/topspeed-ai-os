@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from jsonschema import Draft202012Validator
 
+import topspeed_ai_os.development_workflow.schema_validator as schema_validator_module
 from topspeed_ai_os.development_workflow import (
     compute_idempotency_key,
     compute_scope_hash,
@@ -84,6 +85,45 @@ def test_valid_state_passes():
     result = validate_workflow_state(valid_state())
     assert result.is_valid
     assert result.errors == ()
+
+
+def test_public_validator_rejects_schema_override():
+    with pytest.raises(TypeError):
+        validate_workflow_state(valid_state(), schema={})
+
+
+def test_public_validator_rejects_schema_path_override(tmp_path):
+    with pytest.raises(TypeError):
+        validate_workflow_state(valid_state(), schema_path=tmp_path / "alternate-schema.json")
+
+
+def test_arbitrary_schema_cannot_validate_an_invalid_state():
+    with pytest.raises(TypeError):
+        validate_workflow_state({"not": "a workflow state"}, schema={})
+
+
+def test_published_schema_loading_is_cwd_independent(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert validate_workflow_state(valid_state()).is_valid
+
+
+def test_missing_published_schema_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(schema_validator_module, "_SCHEMA_PATH", tmp_path / "missing.json")
+    result = validate_workflow_state(valid_state())
+    assert not result.is_valid
+    assert result.errors[0].path == "$schema"
+    assert result.errors[0].rule == "SCHEMA_INVALID"
+
+
+def test_unreadable_published_schema_fails_closed(monkeypatch):
+    def unreadable_schema(_path):
+        raise OSError("published schema is unreadable")
+
+    monkeypatch.setattr(schema_validator_module, "_load_schema", unreadable_schema)
+    result = validate_workflow_state(valid_state())
+    assert not result.is_valid
+    assert result.errors[0].path == "$schema"
+    assert result.errors[0].rule == "SCHEMA_INVALID"
 
 
 def test_missing_required_field_is_rejected():

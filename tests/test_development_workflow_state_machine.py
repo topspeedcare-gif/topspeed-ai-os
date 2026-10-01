@@ -251,6 +251,83 @@ def test_completed_replay_is_not_executable():
     assert any(error.rule == "COMPLETED_REPLAY" for error in decision.errors)
 
 
+def test_forged_previous_idempotency_key_is_rejected():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    previous["idempotency_key"] = "f" * 64
+    decision = evaluate_transition(previous, proposed)
+    assert not decision.allowed
+    assert any(
+        error.path == "previous_state.idempotency_key" and error.rule == "IDEMPOTENCY_KEY_MISMATCH"
+        for error in decision.errors
+    )
+
+
+def test_forged_proposed_idempotency_key_is_rejected():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    proposed["idempotency_key"] = "f" * 64
+    decision = evaluate_transition(previous, proposed)
+    assert not decision.allowed
+    assert any(
+        error.path == "proposed_state.idempotency_key" and error.rule == "IDEMPOTENCY_KEY_MISMATCH"
+        for error in decision.errors
+    )
+
+
+def test_same_forged_idempotency_key_in_both_states_is_rejected():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    previous["idempotency_key"] = "f" * 64
+    proposed["idempotency_key"] = "f" * 64
+    decision = evaluate_transition(previous, proposed)
+    assert not decision.allowed
+    assert sum(error.rule == "IDEMPOTENCY_KEY_MISMATCH" for error in decision.errors) == 2
+
+
+def test_canonical_input_change_with_stale_key_is_rejected_first():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    proposed["actor"] = "changed-actor"
+    decision = evaluate_transition(previous, proposed)
+    assert not decision.allowed
+    assert any(error.rule == "IDEMPOTENCY_KEY_MISMATCH" for error in decision.errors)
+    assert not any(error.rule == "TRANSITION_INVARIANT" for error in decision.errors)
+
+
+def test_attempt_only_change_preserves_canonical_key_semantics():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    proposed["attempt"] = 2
+    assert proposed["idempotency_key"] == compute_idempotency_key(proposed)
+    assert evaluate_transition(previous, proposed).allowed
+
+
+def test_correct_key_pending_to_running_remains_allowed():
+    previous = state_for("BUILDER_IMPLEMENTATION", "PENDING")
+    proposed = deepcopy(previous)
+    proposed["transition_status"] = "RUNNING"
+    decision = evaluate_transition(previous, proposed)
+    assert decision.allowed
+    assert not decision.executable
+
+
+def test_forged_key_cannot_bypass_completed_replay_protection():
+    previous = state_for("AUDIT1_DRAFT", "COMPLETED", verdict="PASS")
+    proposed = deepcopy(previous)
+    previous["idempotency_key"] = "f" * 64
+    proposed["idempotency_key"] = "f" * 64
+    decision = evaluate_transition(previous, proposed)
+    assert not decision.allowed
+    assert not decision.executable
+    assert any(error.rule == "IDEMPOTENCY_KEY_MISMATCH" for error in decision.errors)
+
+
 def test_schema_invalid_states_stop_before_transition_logic():
     previous = state_for("AUDIT1_DRAFT", "COMPLETED", verdict="PASS")
     proposed = state_for("AUDIT2_WORK_ORDER_REVIEW", "PENDING")
@@ -280,6 +357,24 @@ def test_no_real_actor_is_invoked_and_fake_runner_is_test_only():
     assert runner.calls == 0
     assert runner.run() == {"verdict": "PASS"}
 
+    source_root = (
+        Path(__file__).resolve().parents[1] / "src" / "topspeed_ai_os" / "development_workflow"
+    )
+    runtime_classes = []
+    runtime_calls = []
+    for path in source_root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        runtime_classes.extend(
+            node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+        )
+        runtime_calls.extend(node for node in ast.walk(tree) if isinstance(node, ast.Call))
+    assert not any("runner" in name.lower() or "actor" in name.lower() for name in runtime_classes)
+    assert not any(
+        isinstance(call.func, ast.Name)
+        and ("runner" in call.func.id.lower() or "actor" in call.func.id.lower())
+        for call in runtime_calls
+    )
+
 
 @pytest.mark.parametrize(
     "forbidden_root",
@@ -294,6 +389,8 @@ def test_no_real_actor_is_invoked_and_fake_runner_is_test_only():
         "topspeed_ai_os.tools",
         "topspeed_ai_os.data_hub",
         "topspeed_ai_os.contracts",
+        "topspeed_ai_os.approval",
+        "topspeed_ai_os.business_runtime",
     ],
 )
 def test_step1_runtime_has_no_forbidden_boundary_import(forbidden_root):
@@ -310,6 +407,72 @@ def test_step1_runtime_has_no_forbidden_boundary_import(forbidden_root):
                 imported.add(node.module)
     assert not any(
         name == forbidden_root or name.startswith(f"{forbidden_root}.") for name in imported
+    )
+
+
+def test_step1_runtime_has_no_forbidden_execution_or_file_mutation_call():
+    source_root = (
+        Path(__file__).resolve().parents[1] / "src" / "topspeed_ai_os" / "development_workflow"
+    )
+    forbidden_qualified_prefixes = (
+        "subprocess.",
+        "os.system",
+        "os.popen",
+        "os.getenv",
+        "os.putenv",
+        "socket.",
+        "requests.",
+        "httpx.",
+        "urllib.",
+        "git.",
+        "Repo.",
+    )
+    forbidden_mutation_methods = {
+        "write",
+        "writelines",
+        "write_text",
+        "write_bytes",
+        "touch",
+        "mkdir",
+        "unlink",
+        "rmdir",
+        "rename",
+        "replace",
+        "remove",
+    }
+
+    def qualified_name(node):
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            prefix = qualified_name(node.value)
+            return f"{prefix}.{node.attr}" if prefix else node.attr
+        return ""
+
+    open_calls = []
+    for path in source_root.glob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            called = qualified_name(node.func)
+            assert not called.startswith(forbidden_qualified_prefixes)
+            assert called.rsplit(".", 1)[-1] not in forbidden_mutation_methods
+            assert "runner" not in called.lower()
+            assert "actor" not in called.lower()
+            if called == "open" or called.endswith(".open"):
+                open_calls.append(node)
+
+    assert len(open_calls) == 1
+    schema_open = open_calls[0]
+    assert schema_open.args
+    assert isinstance(schema_open.args[0], ast.Constant)
+    assert schema_open.args[0].value == "r"
+    assert any(
+        keyword.arg == "encoding"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value == "utf-8"
+        for keyword in schema_open.keywords
     )
 
 

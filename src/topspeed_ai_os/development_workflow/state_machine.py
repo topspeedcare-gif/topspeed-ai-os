@@ -6,7 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .schema_validator import ValidationDiagnostic, validate_workflow_state
+from .schema_validator import (
+    ValidationDiagnostic,
+    compute_idempotency_key,
+    validate_workflow_state,
+)
 
 _STAGES = (
     "AUDIT1_DRAFT",
@@ -182,6 +186,28 @@ def _schema_errors(state: object, label: str) -> list[ValidationDiagnostic]:
     ]
 
 
+def _idempotency_errors(state: Mapping[str, Any], label: str) -> list[ValidationDiagnostic]:
+    try:
+        expected_key = compute_idempotency_key(state)
+    except (TypeError, ValueError) as exc:
+        return [
+            _diagnostic(
+                f"{label}.idempotency_key",
+                "IDEMPOTENCY_KEY_INVALID",
+                f"canonical idempotency key could not be computed: {type(exc).__name__}: {exc}",
+            )
+        ]
+    if state["idempotency_key"] != expected_key:
+        return [
+            _diagnostic(
+                f"{label}.idempotency_key",
+                "IDEMPOTENCY_KEY_MISMATCH",
+                "stored idempotency_key does not match the canonical inputs",
+            )
+        ]
+    return []
+
+
 def _decision(
     *,
     allowed: bool,
@@ -208,6 +234,11 @@ def evaluate_transition(
 
     errors = _schema_errors(previous_state, "previous_state")
     errors.extend(_schema_errors(proposed_state, "proposed_state"))
+    if errors:
+        return _decision(allowed=False, errors=errors)
+
+    errors.extend(_idempotency_errors(previous_state, "previous_state"))
+    errors.extend(_idempotency_errors(proposed_state, "proposed_state"))
     if errors:
         return _decision(allowed=False, errors=errors)
 

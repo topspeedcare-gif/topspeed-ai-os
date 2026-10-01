@@ -111,28 +111,20 @@ def _load_schema(schema_path: Path) -> Mapping[str, Any]:
 
 def validate_workflow_state(
     state: object,
-    *,
-    schema: Mapping[str, Any] | None = None,
-    schema_path: str | Path | None = None,
 ) -> ValidationResult:
     """Validate state without mutating it, using the published Draft 2020-12 schema."""
 
     diagnostics: list[ValidationDiagnostic] = []
     try:
-        if schema is not None and schema_path is not None:
-            raise ValueError("provide schema or schema_path, not both")
-        selected_schema = schema
-        if selected_schema is None:
-            selected_path = Path(schema_path) if schema_path is not None else _SCHEMA_PATH
-            selected_schema = _load_schema(selected_path.resolve())
+        selected_schema = _load_schema(_SCHEMA_PATH.resolve())
         Draft202012Validator.check_schema(selected_schema)
+        validator = Draft202012Validator(selected_schema, format_checker=FormatChecker())
     except (OSError, json.JSONDecodeError, SchemaError, ValueError, TypeError) as exc:
         diagnostics.append(
             ValidationDiagnostic("$schema", "SCHEMA_INVALID", f"{type(exc).__name__}: {exc}")
         )
         return ValidationResult(False, tuple(diagnostics))
 
-    validator = Draft202012Validator(selected_schema, format_checker=FormatChecker())
     for error in sorted(validator.iter_errors(state), key=_error_key):
         diagnostics.append(
             ValidationDiagnostic(
