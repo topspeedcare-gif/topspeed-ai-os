@@ -201,9 +201,41 @@ status. The Frozen Schema remains unchanged.
 rejected rather than trimmed. Accepted values are preserved exactly and validated by the Frozen
 Contract and current Schema/validator.
 
-Synthetic v1 adds no URI scheme allowlist, credential-in-URI taxonomy, query/fragment secret
-taxonomy, canonicalizer, or production storage policy. It does not dereference, download, check
-existence, convert schemes, or rewrite URLs.
+In addition to Frozen URI validation, `storage_uri` reuses the existing repository source-reference
+safety boundary in `topspeed_ai_os.tools.redaction.sanitized_source_uri`, with the same exact-
+equality enforcement as `topspeed_ai_os.data_hub.adapter._safe_reference`:
+
+```text
+sanitized = sanitized_source_uri(storage_uri)
+accept only if sanitization succeeds and sanitized == storage_uri
+```
+
+That existing boundary rejects URI userinfo when either a username or password is present. For each
+query pair, it percent-decodes the parameter name through the existing implementation, lowercases
+it, and rejects an exact match in this current set:
+
+- `access_token`
+- `token`
+- `authorization`
+- `signature`
+- `secret`
+- `refresh_token`
+
+The sanitizer removes URI fragments, so a fragment makes the sanitized value differ from the
+original and exact-equality enforcement rejects it. Sanitizer failure also fails closed. An accepted
+`storage_uri` is preserved exactly and is never rewritten.
+
+Unsafe input is not placed in a validated `CONTENT_ASSET` record, human-readable error detail, log,
+or persistent provenance. Failure reporting uses only a sanitized, non-sensitive summary consistent
+with the existing source-reference boundary; this ADR introduces no new logging or redaction
+subsystem.
+
+This reuse does not claim detection of every provider-specific signed URL, credential-bearing URI
+pattern, possible secret parameter, or ambiguous URI. In particular, vendor-specific names such as
+`X-Amz-Signature` and `X-Goog-Signature` are not claimed as covered by the current exact-name set.
+Synthetic v1 adds no URI scheme allowlist, secret taxonomy, canonicalizer, or production storage
+policy. It does not modify the existing sanitizer, add a CONTENT_ASSET-specific validator,
+dereference, download, check existence, convert schemes, or rewrite URLs.
 
 Two checksum concepts remain separate:
 
@@ -331,31 +363,57 @@ supplied fingerprint is never substituted.
 
 ## 19. Source-ingestion identity
 
-Synthetic-v1 source-ingestion identity binds all of:
+The source-ingestion identity is the canonical hash of exactly these four top-level fields:
 
-- target Contract `CONTENT_ASSET`
-- schema identifier `topspeed.content_asset.synthetic.v1`
-- verified `SourceMetadata` source identity
-- verified `SourceMetadata` checksum
-- canonical validated source-row payload and context
-- direct-internal-SKU strategy identity
-- deterministic `known_skus` fingerprint
-- exact `PRODUCT_FACT` referential-context fingerprint
-- schema/mapping strategy version
+```text
+target_contract = CONTENT_ASSET
+schema_version = topspeed.content_asset.synthetic.v1
+source_checksum = verified checksum of the original SensitiveBytes from the same ToolResult
+mapping_fingerprint = deterministic hash of the approved effective referential context
+```
 
-It excludes `run_id`, `task_id`, clock, `created_at`, `updated_at`, random `asset_id`, and retry
-count. Those values cannot turn an exact replay into a new ingestion identity.
+Its shape is equivalent to:
+
+```python
+payload_sha256(
+    {
+        "target_contract": "CONTENT_ASSET",
+        "schema_version": CONTENT_ASSET_SCHEMA,
+        "source_checksum": verified_source_checksum,
+        "mapping_fingerprint": mapping_fingerprint,
+    }
+)
+```
+
+There is no fifth top-level field. `SourceMetadata` source identity, canonical source-row payload,
+raw context objects, `known_skus`, the fact-context fingerprint, `run_id`, `task_id`, clock, and
+random `asset_id` are not separate top-level ingestion-identity inputs.
+
+The deterministic `mapping_fingerprint` encapsulates the direct-internal-SKU strategy identity,
+the approved schema/strategy version, sorted and deduplicated `known_skus`, and the exact
+`PRODUCT_FACT` referential-context fingerprint defined in section 18. Those values are not exposed
+again at the ingestion-identity top level. The fact context remains actual existing records reduced
+to exactly `fact_id`, `sku`, `fact_type`, `fact_value`, `unit`, and `verification_status`; no seventh
+field is added, and neither a stored business hash nor a caller-supplied fact fingerprint may
+substitute for it.
+
+The ingestion identity excludes `run_id`, `task_id`, clock, `created_at`, `updated_at`, random
+`asset_id`, and retry count. Those values cannot turn an exact replay into a new ingestion identity.
 
 The Adapter must first perform enough deterministic structural parsing and actual fact-context
-resolution to canonicalize validated `claim_fact_ids`; it must not fingerprint unparsed or
-unvalidated claims. The resulting identity is nevertheless determined before asset-ID issuance,
-persistent publisher mutation, or persistent timestamp mutation. This ordering does not authorize
-another Architecture decision or optimization.
+resolution to canonicalize validated `claim_fact_ids` and construct the approved
+`mapping_fingerprint`; it must not fingerprint unparsed or unvalidated claims. It then determines
+the source-ingestion identity and checks actual existing state for an exact source duplicate before
+invoking the asset-ID factory or calling the injected clock. If a matching ingestion identity
+exists, it immediately returns a source-duplicate idempotent no-op with zero asset-ID factory calls,
+zero clock calls, and zero publisher mutation. This ordering does not authorize another
+Architecture decision or optimization.
 
 ## 20. Duplicate semantics
 
-- Same source-ingestion identity is a source duplicate and idempotent no-op. It issues no asset ID,
-  mutates no publisher state, and creates no persistent state.
+- Same source-ingestion identity is a source duplicate and idempotent no-op. It invokes neither the
+  asset-ID factory nor the clock, mutates no publisher state, creates no accepted candidate state,
+  and has `publish_eligible == false`.
 - Within one batch, the same natural key and same complete business hash produces one business
   candidate plus duplicate classification.
 - Against existing state, the same natural key and same complete business hash preserves existing
@@ -378,9 +436,9 @@ fails closed. Failed, partial, and conflicting candidate sets are never promoted
 ## 22. Idempotency
 
 Retry count, random asset-ID differences, clock values, and excluded provenance cannot change
-source-ingestion or business identity. Exact replay has no persistent side effect. Identity and
-duplicate classification precede unnecessary random ID issuance and persistent time or publisher
-mutation.
+source-ingestion or business identity. Exact replay has no persistent side effect. Source-duplicate
+classification precedes both asset-ID factory invocation and `clock()` invocation, not merely
+persistent timestamp mutation, and it precedes publisher mutation.
 
 ## 23. Time/source provenance
 
@@ -481,24 +539,46 @@ A separately authorized implementation must test at least:
   separate caller task mismatch if that interface exists
 - raw boundary: valid exact-byte checksum; mismatch; missing `SensitiveBytes`; invalid raw/parsed
   relationship; separation of source checksum from asset checksum
+- storage URI safety: Frozen-valid plus existing-sanitizer-valid acceptance; username and password
+  userinfo rejection; exact rejection of `access_token`, `token`, `authorization`, `signature`,
+  `secret`, and `refresh_token` query names; percent-decoded and case-insensitive name matching;
+  fragment rejection through exact equality; unchanged preservation of accepted values; no unsafe
+  original URI in a record, error, log, or persistent provenance; no vendor-specific signed-URL
+  guarantee and no new scheme allowlist
 - ID: asset format, wrong prefix, invalid ULID, generator ordinary `Exception` and `BaseException`,
   and no unnecessary ID on duplicate or rejected paths
-- identity: exact replay; within-batch and existing duplicates; same-key/different-hash conflict;
-  changed `known_skus` or fact context; random ID unable to bypass duplicates
+- identity: an exact four-field top-level object containing only `target_contract`, `schema_version`,
+  `source_checksum`, and `mapping_fingerprint`; no fifth top-level field; changed `known_skus` or
+  approved six-field fact context changes the mapping fingerprint; source-checksum changes alter
+  ingestion identity; `run_id`, `task_id`, clock, and random asset ID do not; exact replay;
+  within-batch and existing duplicates; same-key/different-hash conflict; random ID unable to bypass
+  duplicates
 - business hash: exact field set; `generated_by` exactly once; same generator plus same business
   fields is `BUSINESS_DUPLICATE`; changed generator under the same key is conflict; random ID and
   provenance-only changes leave the hash unchanged
 - fact fingerprint: exact six fields; deterministic Fact-ID order; empty `[]`; provenance excluded;
   malformed referenced facts fail closed
-- provenance: required run/task IDs, `data_as_of` preservation, one injected clock, and no
-  persistent timestamp mutation on replay/duplicate
+- provenance: required run/task IDs, `data_as_of` preservation, and one injected clock for a new
+  accepted batch
+- source replay ordering: direct instrumentation proves asset-ID factory calls equal zero, clock
+  calls equal zero, and publisher mutations equal zero; result classification is `SOURCE_DUPLICATE`,
+  `publish_eligible == false`, and no new accepted candidate state exists
 - publisher: READY atomic publication; no publication for PARTIAL, CONFLICT, or REJECTED; target
   mismatch; real six-Contract coexistence; malformed cross-Contract state; existing-state
   immutability
 - boundaries: no Phase 5 calculation, Approval Queue, AI run-log writer, LIVE/API/credential
   access, or external write
 
-## 31. Non-decisions
+## 31. Corrective finding closure
+
+- `CA-A1-F-001`: CLOSED by exact reuse of the current repository URI safety boundary with exact-
+  equality enforcement and without broader security claims or a new taxonomy.
+- `CA-A1-F-002`: CLOSED by fixing the source-ingestion identity to exactly four top-level fields and
+  encapsulating approved SKU and fact context in `mapping_fingerprint`.
+- `CA-A1-F-003`: CLOSED by requiring exact source-duplicate detection before both asset-ID factory
+  invocation and `clock()` invocation, with direct zero-call and zero-mutation test obligations.
+
+## 32. Non-decisions
 
 The following remain explicitly undecided:
 
