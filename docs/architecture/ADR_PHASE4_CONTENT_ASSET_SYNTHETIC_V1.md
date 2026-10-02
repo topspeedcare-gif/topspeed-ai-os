@@ -337,7 +337,7 @@ Thus the same natural key and complete hash is a business duplicate. The same ke
 `generated_by`, title, MIME type, asset checksum, or claim IDs is a conflict. A different random
 `asset_id`, or a difference only in excluded provenance, leaves the business hash unchanged.
 
-## 18. Fact-context fingerprint
+## 18. PRODUCT_FACT context canonicalization
 
 For each referenced `PRODUCT_FACT`, the canonical field set is exactly:
 
@@ -352,14 +352,17 @@ No other fact field is an input. In particular, source, `data_as_of`, `created_a
 `task_id`, `verified_at`, `valid_from`, `valid_to`, `source_uri`, `source_checksum`, and other
 provenance are excluded.
 
-Actual referenced records are sorted by `fact_id`. Each becomes an object containing those exact
-six keys. `fact_value` uses the stored validated JSON value. Missing and null `unit` canonicalize
-consistently with the existing PRODUCT_FACT synthetic-v1 no-unit semantics. The list is encoded as
-UTF-8 canonical JSON with sorted object keys and compact separators, then hashed to lowercase
-SHA-256 hex. The canonical input for no referenced facts is `[]`.
+Duplicate `fact_id` values are rejected before mapping-fingerprint calculation. Actual referenced
+records are sorted by `fact_id` in lexicographic ascending order, so claim order, lookup order, and
+storage order cannot affect the canonical context. Each record becomes an object containing those
+exact six keys. `fact_id`, `sku`, `fact_type`, and `verification_status` use their exact
+validated stored values, and `fact_value` uses the stored validated JSON value. Missing and null
+`unit` both become explicit JSON `null`; a validated non-null unit is preserved exactly. No
+other unit normalization is authorized. The canonical input for no referenced facts is exactly
+`[]`.
 
-The fingerprint is computed from actual existing records. A stored business hash or caller-
-supplied fingerprint is never substituted.
+The context is constructed from actual existing validated records. A stored business hash or
+caller-supplied fingerprint is never substituted.
 
 ## 19. Source-ingestion identity
 
@@ -389,13 +392,89 @@ There is no fifth top-level field. `SourceMetadata` source identity, canonical s
 raw context objects, `known_skus`, the fact-context fingerprint, `run_id`, `task_id`, clock, and
 random `asset_id` are not separate top-level ingestion-identity inputs.
 
-The deterministic `mapping_fingerprint` encapsulates the direct-internal-SKU strategy identity,
-the approved schema/strategy version, sorted and deduplicated `known_skus`, and the exact
-`PRODUCT_FACT` referential-context fingerprint defined in section 18. Those values are not exposed
-again at the ingestion-identity top level. The fact context remains actual existing records reduced
-to exactly `fact_id`, `sku`, `fact_type`, `fact_value`, `unit`, and `verification_status`; no seventh
-field is added, and neither a stored business hash nor a caller-supplied fact fingerprint may
-substitute for it.
+The external `schema_version` identifies the source-ingestion Schema and remains
+`topspeed.content_asset.synthetic.v1`. It is distinct from the internal mapping algorithm identity.
+The mapping algorithm identity exists only inside the mapping payload as:
+
+```text
+mapping_strategy_version = topspeed.content_asset.mapping.direct_sku_fact_context.v1
+```
+
+The SKU strategy also exists only inside that payload as:
+
+```text
+sku_strategy = direct_internal_sku
+```
+
+The canonical mapping payload is one JSON object with exactly these four keys and values:
+
+```json
+{
+  "known_skus": [],
+  "mapping_strategy_version": "topspeed.content_asset.mapping.direct_sku_fact_context.v1",
+  "product_fact_context": [],
+  "sku_strategy": "direct_internal_sku"
+}
+```
+
+The arrays in that example stand for the canonical values defined below. The exact key set is
+`known_skus`, `mapping_strategy_version`, `product_fact_context`, and `sku_strategy`. Additional
+keys, aliases, renamed keys, or a different object structure are canonical-contract violations and
+fail closed.
+
+`known_skus` is an array of strings derived only from validated `known_skus` context. Each member
+is validated through the existing SKU boundary, deduplicated, left without case or Unicode
+normalization, and sorted in lexicographic ascending order before serialization. Input order and
+duplicate input members therefore do not affect the canonical payload.
+
+`product_fact_context` is the array defined in section 18. Each object has exactly `fact_id`, `sku`,
+`fact_type`, `fact_value`, `unit`, and `verification_status`; no seventh field is allowed. The array
+is sorted by `fact_id` in lexicographic ascending order. Only existing validated `PRODUCT_FACT`
+records are used, and `CONTENT_ASSET` references remain restricted to
+`verification_status == VERIFIED`.
+
+Serialization and hashing use the shared `topspeed_ai_os.core.canonical` boundary:
+
+```python
+mapping_fingerprint = payload_sha256(mapping_payload)
+```
+
+`canonical_json` normalizes supported values and serializes equivalently to:
+
+```python
+json.dumps(
+    normalized_payload,
+    ensure_ascii=False,
+    allow_nan=False,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8")
+```
+
+This produces UTF-8 with no trailing newline, no Unicode normalization, deterministic nested-object
+key ordering, and no insignificant whitespace. Unsupported or non-deterministic values fail closed
+under the existing canonicalization boundary. `payload_sha256` produces exactly
+`sha256:<64 lowercase hexadecimal characters>`. A bare 64-character digest, uppercase digest,
+`repr()` hash, iteration-order hash, or separately serialized hash is not the approved
+`mapping_fingerprint` representation.
+
+The following determinism rules are mandatory:
+
+- reordering `known_skus` does not change `mapping_fingerprint`
+- duplicate `known_skus` input does not change it after deduplication
+- changing `known_skus` membership changes it
+- changing PRODUCT_FACT lookup, claim, or storage order does not change it
+- changing any one of `fact_id`, `sku`, `fact_type`, `fact_value`, `unit`, or
+  `verification_status` changes it, except for the approved absent/null `unit` equivalence
+- absent and null `unit` both become explicit JSON `null` and produce the same result
+- changing `sku_strategy` or `mapping_strategy_version` changes it
+- repeating an identical canonical payload produces an identical result
+
+These mapping values are not exposed again at the ingestion-identity top level. There is no fifth
+top-level field: `mapping_strategy_version`, `sku_strategy`, `known_skus`,
+`product_fact_context`, a fact-context fingerprint, `SourceMetadata` source identity, canonical
+source-row payload, raw context objects, `run_id`, `task_id`, clock, and random `asset_id` remain
+excluded there.
 
 The ingestion identity excludes `run_id`, `task_id`, clock, `created_at`, `updated_at`, random
 `asset_id`, and retry count. Those values cannot turn an exact replay into a new ingestion identity.
@@ -548,16 +627,33 @@ A separately authorized implementation must test at least:
 - ID: asset format, wrong prefix, invalid ULID, generator ordinary `Exception` and `BaseException`,
   and no unnecessary ID on duplicate or rejected paths
 - identity: an exact four-field top-level object containing only `target_contract`, `schema_version`,
-  `source_checksum`, and `mapping_fingerprint`; no fifth top-level field; changed `known_skus` or
-  approved six-field fact context changes the mapping fingerprint; source-checksum changes alter
-  ingestion identity; `run_id`, `task_id`, clock, and random asset ID do not; exact replay;
+  `source_checksum`, and `mapping_fingerprint`; no fifth top-level field; source-checksum changes
+  alter ingestion identity; `run_id`, `task_id`, clock, and random asset ID do not; exact replay;
   within-batch and existing duplicates; same-key/different-hash conflict; random ID unable to bypass
   duplicates
+- mapping fingerprint canonical contract:
+  - the payload is an exact four-key object containing only `known_skus`,
+    `mapping_strategy_version`, `product_fact_context`, and `sku_strategy`; a renamed key,
+    additional key, or different structure is rejected
+  - reordered `known_skus` produces the same fingerprint, and duplicate input members produce the
+    same fingerprint after deduplication
+  - changed `known_skus` membership changes the fingerprint
+  - the same PRODUCT_FACT records in a different lookup order produce the same fingerprint
+  - changing each of `fact_id`, `sku`, `fact_type`, `fact_value`, `unit`, and
+    `verification_status` independently changes the fingerprint, except for the approved
+    absent/null `unit` equivalence
+  - changing `sku_strategy` or `mapping_strategy_version` changes the fingerprint
+  - absent versus null PRODUCT_FACT `unit` becomes explicit JSON `null` and produces the same
+    fingerprint
+  - repeated calculation of the same canonical payload produces the same fingerprint
+  - output matches `^sha256:[0-9a-f]{64}$`; a bare 64-character digest without the `sha256:` prefix
+    is rejected
+  - external ingestion identity still contains exactly four top-level fields
 - business hash: exact field set; `generated_by` exactly once; same generator plus same business
   fields is `BUSINESS_DUPLICATE`; changed generator under the same key is conflict; random ID and
   provenance-only changes leave the hash unchanged
-- fact fingerprint: exact six fields; deterministic Fact-ID order; empty `[]`; provenance excluded;
-  malformed referenced facts fail closed
+- PRODUCT_FACT context: exact six fields; duplicate Fact IDs rejected; deterministic Fact-ID order;
+  empty `[]`; provenance excluded; malformed referenced facts fail closed
 - provenance: required run/task IDs, `data_as_of` preservation, and one injected clock for a new
   accepted batch
 - source replay ordering: direct instrumentation proves asset-ID factory calls equal zero, clock
@@ -574,7 +670,8 @@ A separately authorized implementation must test at least:
 - `CA-A1-F-001`: CLOSED by exact reuse of the current repository URI safety boundary with exact-
   equality enforcement and without broader security claims or a new taxonomy.
 - `CA-A1-F-002`: CLOSED by fixing the source-ingestion identity to exactly four top-level fields and
-  encapsulating approved SKU and fact context in `mapping_fingerprint`.
+  fixing the exact four-key canonical payload, shared serialization, prefixed hash format, and
+  determinism rules for `mapping_fingerprint`.
 - `CA-A1-F-003`: CLOSED by requiring exact source-duplicate detection before both asset-ID factory
   invocation and `clock()` invocation, with direct zero-call and zero-mutation test obligations.
 
