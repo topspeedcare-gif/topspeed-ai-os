@@ -626,11 +626,25 @@ A separately authorized implementation must test at least:
   guarantee and no new scheme allowlist
 - ID: asset format, wrong prefix, invalid ULID, generator ordinary `Exception` and `BaseException`,
   and no unnecessary ID on duplicate or rejected paths
-- identity: an exact four-field top-level object containing only `target_contract`, `schema_version`,
-  `source_checksum`, and `mapping_fingerprint`; no fifth top-level field; source-checksum changes
-  alter ingestion identity; `run_id`, `task_id`, clock, and random asset ID do not; exact replay;
-  within-batch and existing duplicates; same-key/different-hash conflict; random ID unable to bypass
-  duplicates
+- identity:
+  - the canonical top-level object contains exactly `target_contract`, `schema_version`,
+    `source_checksum`, and `mapping_fingerprint`, with no fifth field
+  - from one valid baseline canonical identity context, each sensitivity case changes exactly one
+    top-level field, keeps the other three values identical, recomputes the ingestion identity, and
+    asserts that the result differs from the baseline:
+    - change only `target_contract`
+    - change only `schema_version`
+    - change only `source_checksum`
+    - change only `mapping_fingerprint`
+  - the alternative `source_checksum` and `mapping_fingerprint` values used by those cases each
+    match `^sha256:[0-9a-f]{64}$`; malformed values rejected before identity calculation do not
+    satisfy the sensitivity obligation
+  - the `target_contract` and `schema_version` cases exercise the internal canonical identity
+    boundary only; they do not authorize dynamic target acceptance, another Contract ingestion,
+    unsupported schema acceptance, a public API change, or new runtime configuration
+  - `run_id`, `task_id`, clock, and random asset ID do not alter ingestion identity; exact replay,
+    within-batch and existing duplicates, same-key/different-hash conflict, and random-ID duplicate
+    bypass prevention remain required
 - mapping fingerprint canonical contract:
   - the payload is an exact four-key object containing only `known_skus`,
     `mapping_strategy_version`, `product_fact_context`, and `sku_strategy`; a renamed key,
