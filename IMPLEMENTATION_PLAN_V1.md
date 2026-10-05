@@ -53,12 +53,20 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 구현 항목 | raw → 8개 Contract 변환, SKU mapping, provenance, checksum+자연키 dedup, batch publish gate |
+| 구현 항목 | PHASE 3 raw results를 6개 source-ingestion Contract(`PRODUCT_MASTER`, `PRODUCT_FACT`, `CHANNEL_DAILY`, `AD_DAILY`, `INVENTORY`, `CONTENT_ASSET`)로 변환, SKU mapping, provenance, checksum+자연키 dedup, batch publish gate |
 | 입력 | PHASE 3 raw results |
-| 출력 | 검증된 Contract records와 rejected records |
+| 출력 | 검증된 6개 source-ingestion Contract records와 rejected records |
 | Dependency | PHASE 2, PHASE 3 |
 | Test | 중복 날짜/다른 파일, 미등록 SKU, 단위 변환, 기준일 누락, 부분 실패, 재수집 idempotency |
-| 완료 조건 | 오류 batch가 current/latest로 승격되지 않고 모든 row의 Source와 기준일 추적 가능 |
+| 완료 조건 | 6개 source-ingestion Contract Adapter가 구현되고, 오류 batch가 current/latest로 승격되지 않으며 모든 row의 Source와 기준일 추적 가능 |
+
+Phase 2에서 정의한 8개 Data Contract 중 `APPROVAL_QUEUE`와 `AI_RUN_LOG`는 PHASE 3 raw business-source ingestion 대상이 아니다.
+
+`APPROVAL_QUEUE`의 record 생성과 상태 전이는 PHASE 8 Approval Layer가 소유한다.
+
+`AI_RUN_LOG`는 Frozen Architecture에 정의된 처리 lifecycle의 append-only event Contract이며, PHASE 4는 그 runtime lifecycle writer를 선행 구현하지 않는다. 해당 writer의 구체적 구현 책임은 관련 후속 lifecycle Architecture와 Phase authority에 따른다.
+
+이 책임 경계의 정정은 PHASE 4 완료 또는 PHASE 5 진입을 자동 승인하지 않는다.
 
 ## PHASE 5 — Deterministic Calculation Engine
 
