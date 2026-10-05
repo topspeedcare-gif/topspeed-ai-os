@@ -14,6 +14,7 @@ _PREFIX_PATTERNS = {
     "apr": re.compile(rf"^apr_{_ULID_PATTERN}$"),
     "idem": re.compile(rf"^idem_{_ULID_PATTERN}$"),
     "fact": re.compile(rf"^fact_{_ULID_PATTERN}$"),
+    "asset": re.compile(rf"^asset_{_ULID_PATTERN}$"),
 }
 _SKU_PATTERN = re.compile(r"^[A-Z0-9]+(?:-[A-Z0-9]+)+$")
 _SKU_SEGMENT_CLEANER = re.compile(r"[^A-Z0-9]+")
@@ -69,6 +70,10 @@ def generate_fact_id() -> str:
     return _generate_prefixed("fact")
 
 
+def generate_asset_id() -> str:
+    return _generate_prefixed("asset")
+
+
 def generate_sku(*segments: str) -> str:
     """Build an internal SKU from at least two explicit, non-empty segments."""
 
@@ -102,6 +107,10 @@ def validate_fact_id(value: object) -> bool:
     return _validate_prefixed(value, "fact")
 
 
+def validate_asset_id(value: object) -> bool:
+    return _validate_prefixed(value, "asset")
+
+
 def validate_sku(value: object) -> bool:
     return isinstance(value, str) and _SKU_PATTERN.fullmatch(value) is not None
 
@@ -130,6 +139,10 @@ def require_valid_idempotency_key(value: str) -> str:
 
 def require_valid_fact_id(value: str) -> str:
     return _require(value, validate_fact_id, "fact_id")
+
+
+def require_valid_asset_id(value: str) -> str:
+    return _require(value, validate_asset_id, "asset_id")
 
 
 def require_valid_sku(value: str) -> str:
