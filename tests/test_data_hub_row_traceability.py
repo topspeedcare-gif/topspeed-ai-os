@@ -8,6 +8,12 @@ from types import ModuleType
 from typing import Any
 
 import pytest
+import test_data_hub_adapter as ad_test
+import test_data_hub_channel_daily as channel_test
+import test_data_hub_content_asset as content_test
+import test_data_hub_inventory as inventory_test
+import test_data_hub_product_fact as fact_test
+import test_data_hub_product_master as master_test
 
 import topspeed_ai_os.data_hub.adapter as ad_runtime
 import topspeed_ai_os.data_hub.channel_daily as channel_runtime
@@ -15,24 +21,6 @@ import topspeed_ai_os.data_hub.content_asset as content_runtime
 import topspeed_ai_os.data_hub.inventory as inventory_runtime
 import topspeed_ai_os.data_hub.product_fact as fact_runtime
 import topspeed_ai_os.data_hub.product_master as master_runtime
-from tests import (
-    test_data_hub_adapter as ad_test,
-)
-from tests import (
-    test_data_hub_channel_daily as channel_test,
-)
-from tests import (
-    test_data_hub_content_asset as content_test,
-)
-from tests import (
-    test_data_hub_inventory as inventory_test,
-)
-from tests import (
-    test_data_hub_product_fact as fact_test,
-)
-from tests import (
-    test_data_hub_product_master as master_test,
-)
 from topspeed_ai_os.data_hub import InMemoryReferencePublisher
 from topspeed_ai_os.data_hub.adapter import (
     PHASE4_SCHEMA_BY_CONTRACT,

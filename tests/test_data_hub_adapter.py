@@ -4,8 +4,8 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import test_data_hub_channel_daily as channel_daily_test
 
-from tests import test_data_hub_channel_daily as channel_daily_test
 from topspeed_ai_os.data_hub import (
     BatchResult,
     BatchStatus,
