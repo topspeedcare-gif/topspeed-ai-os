@@ -25,6 +25,7 @@ from .adapter import (
     Provenance,
     ReasonCode,
     RejectedRecord,
+    _make_row_trace,
     _parse_datetime,
     _record_contract_coherent,
     _record_identity,
@@ -341,6 +342,17 @@ def ingest_product_master(
     for index, values in enumerate(data.rows, start=2):
         row_reference = _row_ref(data, index)
         raw = dict(zip(headers, values, strict=True))
+        row_trace = _make_row_trace(
+            target_contract="PRODUCT_MASTER",
+            schema_version=schema_version,
+            source=metadata.source,
+            source_reference=reference,
+            source_checksum=metadata.checksum_sha256,
+            source_row_reference=row_reference,
+            raw_data_as_of=raw.get("data_as_of"),
+            run_id=run_id,
+            task_id=tool_result.task_id,
+        )
         normalization_rules: list[str] = []
         try:
             if raw.get("data_as_of") in (None, ""):
@@ -388,6 +400,7 @@ def ingest_product_master(
                     exc.summary,
                     reference,
                     _safe_natural_key(raw),
+                    row_trace,
                 )
             )
             continue
@@ -399,6 +412,7 @@ def ingest_product_master(
                     "row rejected by validation",
                     reference,
                     _safe_natural_key(raw),
+                    row_trace,
                 )
             )
             continue
@@ -410,6 +424,7 @@ def ingest_product_master(
                     "row rejected by validation",
                     reference,
                     _safe_natural_key(raw),
+                    row_trace,
                 )
             )
             continue
@@ -446,7 +461,9 @@ def ingest_product_master(
             )
         else:
             conflicts.append(
-                ConflictRecord(row_reference, key, ReasonCode.NATURAL_KEY_CONFLICT, reference)
+                ConflictRecord(
+                    row_reference, key, ReasonCode.NATURAL_KEY_CONFLICT, reference, row_trace
+                )
             )
 
     status = (

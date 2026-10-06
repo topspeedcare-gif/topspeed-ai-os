@@ -70,6 +70,12 @@ class BatchStatus(StrEnum):
     CONFLICT = "CONFLICT"
 
 
+class DataAsOfState(StrEnum):
+    VALID = "VALID"
+    MISSING = "MISSING"
+    INVALID = "INVALID"
+
+
 @dataclass(frozen=True, slots=True)
 class MappingEntry:
     source: str
@@ -100,12 +106,43 @@ class Provenance:
 
 
 @dataclass(frozen=True, slots=True)
+class RowTrace:
+    target_contract: str
+    schema_version: str
+    source: str
+    source_reference: str
+    source_checksum: str
+    source_row_reference: str
+    data_as_of: datetime | None
+    data_as_of_state: DataAsOfState
+    run_id: str
+    task_id: str | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.data_as_of_state, DataAsOfState):
+            raise TypeError("data_as_of_state must be a DataAsOfState")
+        if self.data_as_of_state is DataAsOfState.VALID:
+            if (
+                not isinstance(self.data_as_of, datetime)
+                or self.data_as_of.tzinfo is None
+                or self.data_as_of.utcoffset() is None
+            ):
+                raise ValueError("VALID data_as_of must be timezone-aware")
+        elif self.data_as_of is not None:
+            raise ValueError("MISSING or INVALID data_as_of must be null")
+
+
+@dataclass(frozen=True, slots=True)
 class AcceptedRecord:
     contract_name: str
     validated_record: Mapping[str, Any]
     natural_key: tuple[Any, ...]
     canonical_business_hash: str
     provenance: Provenance
+
+    @property
+    def trace(self) -> RowTrace:
+        return _trace_from_provenance(self.provenance)
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +152,16 @@ class RejectedRecord:
     sanitized_summary: str
     source_reference: str
     natural_key: tuple[Any, ...] | None = None
+    trace: RowTrace | None = None
+
+    def __post_init__(self) -> None:
+        if self.source_row_reference == "batch" and self.trace is not None:
+            raise ValueError("batch-level rejection trace must be null")
+        if self.trace is not None and (
+            self.trace.source_row_reference != self.source_row_reference
+            or self.trace.source_reference != self.source_reference
+        ):
+            raise ValueError("rejected row trace does not match top-level fields")
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +171,10 @@ class DuplicateRecord:
     duplicate_reason: ReasonCode
     provenance: Provenance
 
+    @property
+    def trace(self) -> RowTrace:
+        return _trace_from_provenance(self.provenance)
+
 
 @dataclass(frozen=True, slots=True)
 class ConflictRecord:
@@ -131,6 +182,14 @@ class ConflictRecord:
     natural_key: tuple[Any, ...]
     conflict_reason: ReasonCode
     source_reference: str
+    trace: RowTrace | None = None
+
+    def __post_init__(self) -> None:
+        if self.trace is not None and (
+            self.trace.source_row_reference != self.source_row_reference
+            or self.trace.source_reference != self.source_reference
+        ):
+            raise ValueError("conflict row trace does not match top-level fields")
 
 
 @dataclass(frozen=True, slots=True)
@@ -407,6 +466,58 @@ def _parse_datetime(value: object) -> datetime:
     return parsed
 
 
+def _make_row_trace(
+    *,
+    target_contract: str,
+    schema_version: str,
+    source: str,
+    source_reference: str,
+    source_checksum: str,
+    source_row_reference: str,
+    raw_data_as_of: object,
+    run_id: str,
+    task_id: str | None,
+) -> RowTrace:
+    if raw_data_as_of in (None, ""):
+        data_as_of = None
+        state = DataAsOfState.MISSING
+    else:
+        try:
+            data_as_of = _parse_datetime(raw_data_as_of)
+        except (TypeError, ValueError):
+            data_as_of = None
+            state = DataAsOfState.INVALID
+        else:
+            state = DataAsOfState.VALID
+    return RowTrace(
+        target_contract=target_contract,
+        schema_version=schema_version,
+        source=source,
+        source_reference=source_reference,
+        source_checksum=source_checksum,
+        source_row_reference=source_row_reference,
+        data_as_of=data_as_of,
+        data_as_of_state=state,
+        run_id=run_id,
+        task_id=task_id,
+    )
+
+
+def _trace_from_provenance(provenance: Provenance) -> RowTrace:
+    return RowTrace(
+        target_contract=provenance.target_contract,
+        schema_version=provenance.schema_version,
+        source=provenance.source,
+        source_reference=provenance.source_reference,
+        source_checksum=provenance.source_checksum,
+        source_row_reference=provenance.source_row_reference,
+        data_as_of=provenance.data_as_of,
+        data_as_of_state=DataAsOfState.VALID,
+        run_id=provenance.run_id,
+        task_id=provenance.task_id,
+    )
+
+
 def _parse_integer(value: object) -> int:
     if isinstance(value, bool):
         raise ValueError("boolean is not an integer")
@@ -647,10 +758,26 @@ def ingest_ad_daily(
     }
     for index, values in enumerate(data.rows, start=2):
         row_ref = _row_ref(data, index)
+        partial_raw = dict(zip(headers, values, strict=False))
+        row_trace = _make_row_trace(
+            target_contract="AD_DAILY",
+            schema_version=schema_version,
+            source=metadata.source,
+            source_reference=reference,
+            source_checksum=metadata.checksum_sha256,
+            source_row_reference=row_ref,
+            raw_data_as_of=partial_raw.get("data_as_of"),
+            run_id=run_id,
+            task_id=tool_result.task_id,
+        )
         if len(values) != len(headers):
             rejected.append(
                 RejectedRecord(
-                    row_ref, ReasonCode.INVALID_ROW_SHAPE, "row width mismatch", reference
+                    row_ref,
+                    ReasonCode.INVALID_ROW_SHAPE,
+                    "row width mismatch",
+                    reference,
+                    trace=row_trace,
                 )
             )
             continue
@@ -724,6 +851,7 @@ def ingest_ad_daily(
                     exc.summary,
                     reference,
                     _safe_natural_key(raw),
+                    row_trace,
                 )
             )
             continue
@@ -735,6 +863,7 @@ def ingest_ad_daily(
                     "row rejected by validation",
                     reference,
                     _safe_natural_key(raw, sku),
+                    row_trace,
                 )
             )
             continue
@@ -751,6 +880,7 @@ def ingest_ad_daily(
                     "row rejected by validation",
                     reference,
                     _safe_natural_key(raw, sku),
+                    row_trace,
                 )
             )
             continue
@@ -786,7 +916,7 @@ def ingest_ad_daily(
             )
         else:
             conflicts.append(
-                ConflictRecord(row_ref, key, ReasonCode.NATURAL_KEY_CONFLICT, reference)
+                ConflictRecord(row_ref, key, ReasonCode.NATURAL_KEY_CONFLICT, reference, row_trace)
             )
 
     status = (

@@ -36,6 +36,8 @@ from .adapter import (
     Provenance,
     ReasonCode,
     RejectedRecord,
+    RowTrace,
+    _make_row_trace,
     _parse_datetime,
     _record_contract_coherent,
     _row_ref,
@@ -94,11 +96,12 @@ def _row_invalid_result(
     code: ReasonCode,
     summary: str,
     reference: str,
+    trace: RowTrace,
 ) -> BatchResult:
     return BatchResult(
         batch_id=batch_id,
         status=BatchStatus.REJECTED,
-        rejected=(RejectedRecord(row_reference, code, summary, reference),),
+        rejected=(RejectedRecord(row_reference, code, summary, reference, trace=trace),),
         publish_eligible=False,
         summary=summary,
         batch_reason=code,
@@ -475,12 +478,24 @@ def ingest_content_asset(
                 for fact_id in claims:
                     requested_by_sku.setdefault(fact_id, set()).add(sku)
         except (TypeError, ValueError):
+            row_trace = _make_row_trace(
+                target_contract="CONTENT_ASSET",
+                schema_version=schema_version,
+                source=metadata.source,
+                source_reference=reference,
+                source_checksum=metadata.checksum_sha256,
+                source_row_reference=row_reference,
+                raw_data_as_of=raw.get("data_as_of"),
+                run_id=run_id,
+                task_id=tool_result.task_id,
+            )
             return _row_invalid_result(
                 batch_id,
                 row_reference,
                 ReasonCode.INVALID_SOURCE_VALUE,
                 "row claim context is invalid",
                 reference,
+                row_trace,
             )
     try:
         fact_context, fact_sku_by_id = _product_fact_context(
@@ -558,6 +573,17 @@ def ingest_content_asset(
     for offset, values in enumerate(data.rows):
         row_reference = _row_ref(data, offset + 2)
         raw = dict(zip(headers, values, strict=True))
+        row_trace = _make_row_trace(
+            target_contract="CONTENT_ASSET",
+            schema_version=schema_version,
+            source=metadata.source,
+            source_reference=reference,
+            source_checksum=metadata.checksum_sha256,
+            source_row_reference=row_reference,
+            raw_data_as_of=raw.get("data_as_of"),
+            run_id=run_id,
+            task_id=tool_result.task_id,
+        )
         try:
             missing = [
                 field
@@ -616,6 +642,7 @@ def ingest_content_asset(
                     exc.summary,
                     reference,
                     _safe_natural_key(raw, known_sku_set),
+                    row_trace,
                 )
             )
             continue
@@ -632,6 +659,7 @@ def ingest_content_asset(
                     "row rejected by validation",
                     reference,
                     _safe_natural_key(raw, known_sku_set),
+                    row_trace,
                 )
             )
             continue
@@ -662,7 +690,13 @@ def ingest_content_asset(
                 )
             else:
                 conflicts.append(
-                    ConflictRecord(row_reference, key, ReasonCode.NATURAL_KEY_CONFLICT, reference)
+                    ConflictRecord(
+                        row_reference,
+                        key,
+                        ReasonCode.NATURAL_KEY_CONFLICT,
+                        reference,
+                        row_trace,
+                    )
                 )
             continue
 
@@ -687,6 +721,7 @@ def ingest_content_asset(
                     "row rejected by validation",
                     reference,
                     key,
+                    row_trace,
                 )
             )
             continue
