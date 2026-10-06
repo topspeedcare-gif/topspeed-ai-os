@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from tests import test_data_hub_channel_daily as channel_daily_test
 from topspeed_ai_os.data_hub import (
     BatchResult,
     BatchStatus,
@@ -440,18 +441,17 @@ def test_inactive_mapping_does_not_resolve_a_sku():
     assert result.rejected[0].reason_code is ReasonCode.UNKNOWN_SKU
 
 
-def _other_contract_record(record):
-    return replace(
-        record,
-        contract_name="CHANNEL_DAILY",
-        provenance=replace(record.provenance, target_contract="CHANNEL_DAILY"),
-    )
+def _other_contract_record(_record):
+    return channel_daily_test.ingest(channel_daily_test.tool_result()).accepted[0]
 
 
 def test_publisher_contract_scoped_identity_and_lookup():
     ad_result = ingest(tool_result())
     ad_record = ad_result.accepted[0]
     other_record = _other_contract_record(ad_record)
+    assert other_record.contract_name == "CHANNEL_DAILY"
+    assert other_record.provenance.target_contract == "CHANNEL_DAILY"
+    assert other_record.provenance.schema_version == "topspeed.channel_daily.synthetic.v1"
     publisher = InMemoryReferencePublisher()
     assert publisher.publish(ad_result)
     other_result = BatchResult(

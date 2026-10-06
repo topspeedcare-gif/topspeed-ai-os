@@ -23,6 +23,14 @@ from topspeed_ai_os.tools.redaction import sanitized_source_uri
 from topspeed_ai_os.tools.result import SensitiveBytes, SourceMetadata, ToolResult, ToolStatus
 
 AD_DAILY_SCHEMA = "topspeed.ad_daily.synthetic.v1"
+PHASE4_SCHEMA_BY_CONTRACT = {
+    "PRODUCT_MASTER": "topspeed.product_master.synthetic.v1",
+    "PRODUCT_FACT": "topspeed.product_fact.synthetic.v1",
+    "CHANNEL_DAILY": "topspeed.channel_daily.synthetic.v1",
+    "AD_DAILY": AD_DAILY_SCHEMA,
+    "INVENTORY": "topspeed.inventory.synthetic.v1",
+    "CONTENT_ASSET": "topspeed.content_asset.synthetic.v1",
+}
 _CHECKSUM = re.compile(r"^sha256:[0-9a-f]{64}$")
 _INTEGER = re.compile(r"^-?(?:0|[1-9][0-9]*)$")
 _DECIMAL = re.compile(r"^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$")
@@ -253,6 +261,8 @@ class InMemoryReferencePublisher:
             target_contract = _require_contract_name(result.target_contract)
         except (TypeError, ValueError):
             return False
+        if target_contract not in PHASE4_SCHEMA_BY_CONTRACT:
+            return False
         if (
             not all(isinstance(record, AcceptedRecord) for record in result.accepted)
             or not all(isinstance(record, RejectedRecord) for record in result.rejected)
@@ -343,14 +353,37 @@ def _record_contract_coherent(record: object) -> bool:
     return provenance_contract == contract_name
 
 
+def _record_publication_coherent(record: object, target_contract: str | None = None) -> bool:
+    if not _record_contract_coherent(record):
+        return False
+    contract_name = record.contract_name
+    if target_contract is not None and contract_name != target_contract:
+        return False
+    expected_schema = PHASE4_SCHEMA_BY_CONTRACT.get(contract_name)
+    if expected_schema is None:
+        return False
+    provenance = record.provenance
+    if provenance.schema_version != expected_schema:
+        return False
+    try:
+        trace = record.trace
+    except (TypeError, ValueError):
+        return False
+    return (
+        isinstance(trace, RowTrace)
+        and trace.target_contract == provenance.target_contract
+        and trace.target_contract == contract_name
+        and trace.schema_version == provenance.schema_version
+        and trace.schema_version == expected_schema
+    )
+
+
 def _record_identity(record: AcceptedRecord) -> tuple[str, tuple[Any, ...]]:
     return record.contract_name, record.natural_key
 
 
 def _record_publication_safe(record: object, target_contract: str | None = None) -> bool:
-    if not _record_contract_coherent(record):
-        return False
-    if target_contract is not None and record.contract_name != target_contract:
+    if not _record_publication_coherent(record, target_contract):
         return False
     if not isinstance(record.natural_key, tuple) or not record.natural_key:
         return False

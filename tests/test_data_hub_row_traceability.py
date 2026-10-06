@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from datetime import datetime
+from inspect import signature
 from types import ModuleType
 from typing import Any
 
@@ -34,7 +35,9 @@ from tests import (
 )
 from topspeed_ai_os.data_hub import InMemoryReferencePublisher
 from topspeed_ai_os.data_hub.adapter import (
+    PHASE4_SCHEMA_BY_CONTRACT,
     AcceptedRecord,
+    BatchResult,
     ConflictRecord,
     DataAsOfState,
     DuplicateRecord,
@@ -43,6 +46,8 @@ from topspeed_ai_os.data_hub.adapter import (
     RejectedRecord,
     RowTrace,
     _make_row_trace,
+    _record_identity,
+    _record_publication_safe,
 )
 from topspeed_ai_os.tools.result import SourceMetadata, ToolResult
 
@@ -423,3 +428,232 @@ def test_six_contract_records_publish_without_trace_in_business_payload() -> Non
     assert {record.contract_name for record in publisher.current} == {
         case.target_contract for case in CASES
     }
+
+
+def _valid_result(case: AdapterCase, suffix: str) -> BatchResult:
+    tool_result = case.build({}, f"{case.target_contract}:{suffix}".encode(), TASK)
+    return case.ingest(tool_result)
+
+
+def _seeded_publisher(
+    excluded_contract: str,
+) -> tuple[
+    InMemoryReferencePublisher,
+    tuple[AcceptedRecord, ...],
+    str | None,
+]:
+    seed_case = next(case for case in CASES if case.target_contract != excluded_contract)
+    seed_result = _valid_result(seed_case, f"seed-for-{excluded_contract}")
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(seed_result) is True
+    assert publisher.current is not None
+    return publisher, publisher.current, publisher.last_ingestion_identity
+
+
+def _assert_atomic_publication_rejection(result: BatchResult, *, excluded_contract: str) -> None:
+    publisher, current_before, identity_before = _seeded_publisher(excluded_contract)
+    assert publisher.publish(result) is False
+    assert publisher.current == current_before
+    assert publisher.last_ingestion_identity == identity_before
+
+
+def _canonical_snapshot(result: BatchResult, record: AcceptedRecord) -> tuple[object, ...]:
+    return (
+        result.ingestion_identity,
+        record.provenance.ingestion_identity,
+        record.provenance.mapping_fingerprint,
+        record.natural_key,
+        record.canonical_business_hash,
+        _record_identity(record),
+        record.provenance.source_checksum,
+        result.status,
+        result.batch_reason,
+        result.publish_eligible,
+        len(result.accepted),
+        len(result.rejected),
+        len(result.duplicates),
+        len(result.conflicts),
+    )
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.target_contract)
+def test_trace_only_copy_cannot_change_identity_or_classification(case: AdapterCase) -> None:
+    accepted_result = _valid_result(case, "identity-baseline")
+    accepted = accepted_result.accepted[0]
+    accepted_before = _canonical_snapshot(accepted_result, accepted)
+
+    foreign_schema = next(
+        schema
+        for contract, schema in PHASE4_SCHEMA_BY_CONTRACT.items()
+        if contract != case.target_contract
+    )
+    detached_trace = replace(accepted.trace, schema_version=foreign_schema)
+    assert detached_trace.schema_version != accepted.trace.schema_version
+    assert _canonical_snapshot(accepted_result, accepted) == accepted_before
+
+    duplicate_tool = case.build({}, f"{case.target_contract}:identity-duplicate".encode(), TASK)
+    duplicate_result = case.ingest(duplicate_tool, existing=accepted_result.accepted)
+    duplicate = duplicate_result.duplicates[0]
+    duplicate_before = (
+        duplicate_result.ingestion_identity,
+        duplicate.provenance.ingestion_identity,
+        duplicate.provenance.mapping_fingerprint,
+        duplicate.natural_key,
+        duplicate.provenance.canonical_business_hash,
+        (duplicate.provenance.target_contract, duplicate.natural_key),
+        duplicate.provenance.source_checksum,
+        duplicate.duplicate_reason,
+        duplicate_result.status,
+        duplicate_result.batch_reason,
+        duplicate_result.publish_eligible,
+    )
+    detached_duplicate_trace = replace(duplicate.trace, schema_version=foreign_schema)
+    assert detached_duplicate_trace.schema_version != duplicate.trace.schema_version
+    assert (
+        duplicate_result.ingestion_identity,
+        duplicate.provenance.ingestion_identity,
+        duplicate.provenance.mapping_fingerprint,
+        duplicate.natural_key,
+        duplicate.provenance.canonical_business_hash,
+        (duplicate.provenance.target_contract, duplicate.natural_key),
+        duplicate.provenance.source_checksum,
+        duplicate.duplicate_reason,
+        duplicate_result.status,
+        duplicate_result.batch_reason,
+        duplicate_result.publish_eligible,
+    ) == duplicate_before
+    assert duplicate.duplicate_reason is ReasonCode.BUSINESS_DUPLICATE
+
+
+def test_accepted_rejects_independent_conflicting_trace_input() -> None:
+    accepted = _valid_result(CASES[0], "accepted-projection-negative").accepted[0]
+    foreign_trace = _valid_result(CASES[1], "accepted-foreign-trace").accepted[0].trace
+    assert "trace" not in signature(AcceptedRecord).parameters
+    with pytest.raises(TypeError, match="trace"):
+        replace(accepted, trace=foreign_trace)
+    assert accepted.trace.target_contract == accepted.provenance.target_contract
+    assert accepted.trace.schema_version == accepted.provenance.schema_version
+
+
+def test_business_duplicate_rejects_independent_conflicting_trace_input() -> None:
+    case = CASES[0]
+    accepted_result = _valid_result(case, "duplicate-projection-baseline")
+    duplicate_tool = case.build({}, b"duplicate-projection-candidate", TASK)
+    duplicate = case.ingest(duplicate_tool, existing=accepted_result.accepted).duplicates[0]
+    foreign_trace = _valid_result(CASES[1], "duplicate-foreign-trace").accepted[0].trace
+    assert "trace" not in signature(DuplicateRecord).parameters
+    with pytest.raises(TypeError, match="trace"):
+        replace(duplicate, trace=foreign_trace)
+    assert duplicate.trace.target_contract == duplicate.provenance.target_contract
+    assert duplicate.trace.schema_version == duplicate.provenance.schema_version
+
+
+def test_observed_content_asset_product_master_schema_contamination_is_rejected() -> None:
+    content_result = _valid_result(CASES[5], "observed-schema-defect")
+    content_record = content_result.accepted[0]
+    product_master_schema = PHASE4_SCHEMA_BY_CONTRACT["PRODUCT_MASTER"]
+    contaminated = replace(
+        content_record,
+        provenance=replace(content_record.provenance, schema_version=product_master_schema),
+    )
+    assert contaminated.trace.schema_version == product_master_schema
+    assert _record_publication_safe(contaminated, "CONTENT_ASSET") is False
+    _assert_atomic_publication_rejection(
+        replace(content_result, accepted=(contaminated,)),
+        excluded_contract="CONTENT_ASSET",
+    )
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case.target_contract)
+def test_six_contract_schema_matrix_and_unknown_schema_rejection(case: AdapterCase) -> None:
+    result = _valid_result(case, "schema-matrix")
+    record = result.accepted[0]
+    expected_schema = PHASE4_SCHEMA_BY_CONTRACT[case.target_contract]
+    assert record.provenance.schema_version == expected_schema
+    assert record.trace.schema_version == expected_schema
+    assert _record_publication_safe(record, case.target_contract) is True
+
+    publisher = InMemoryReferencePublisher()
+    assert publisher.publish(result) is True
+    assert publisher.current == (record,)
+    assert publisher.last_ingestion_identity == result.ingestion_identity
+
+    foreign_schemas = {
+        schema
+        for contract, schema in PHASE4_SCHEMA_BY_CONTRACT.items()
+        if contract != case.target_contract
+    }
+    foreign_schemas.add("topspeed.unknown.synthetic.v1")
+    for foreign_schema in foreign_schemas:
+        contaminated = replace(
+            record,
+            provenance=replace(record.provenance, schema_version=foreign_schema),
+        )
+        assert contaminated.trace.schema_version == foreign_schema
+        assert _record_publication_safe(contaminated, case.target_contract) is False
+        _assert_atomic_publication_rejection(
+            replace(result, accepted=(contaminated,)),
+            excluded_contract=case.target_contract,
+        )
+
+
+def test_cross_contract_target_contamination_is_rejected_atomically() -> None:
+    content_result = _valid_result(CASES[5], "target-contamination")
+    content_record = content_result.accepted[0]
+    foreign_target = "PRODUCT_MASTER"
+
+    mutations = (
+        replace(content_record, contract_name=foreign_target),
+        replace(
+            content_record,
+            provenance=replace(content_record.provenance, target_contract=foreign_target),
+        ),
+    )
+    for contaminated in mutations:
+        assert _record_publication_safe(contaminated, "CONTENT_ASSET") is False
+        _assert_atomic_publication_rejection(
+            replace(content_result, accepted=(contaminated,)),
+            excluded_contract="CONTENT_ASSET",
+        )
+
+    mismatched_batch = replace(content_result, target_contract=foreign_target)
+    assert _record_publication_safe(content_record, foreign_target) is False
+    _assert_atomic_publication_rejection(
+        mismatched_batch,
+        excluded_contract="CONTENT_ASSET",
+    )
+
+
+@pytest.mark.parametrize("non_phase4_target", ("APPROVAL_QUEUE", "AI_RUN_LOG"))
+def test_non_phase4_repository_contract_target_fails_closed(non_phase4_target: str) -> None:
+    result = _valid_result(CASES[5], f"non-phase4-{non_phase4_target}")
+    record = result.accepted[0]
+    contaminated = replace(
+        record,
+        contract_name=non_phase4_target,
+        provenance=replace(
+            record.provenance,
+            target_contract=non_phase4_target,
+            schema_version=f"topspeed.{non_phase4_target.lower()}.synthetic.v1",
+        ),
+    )
+    contaminated_result = replace(
+        result,
+        accepted=(contaminated,),
+        target_contract=non_phase4_target,
+    )
+    assert non_phase4_target not in PHASE4_SCHEMA_BY_CONTRACT
+    assert _record_publication_safe(contaminated, non_phase4_target) is False
+    _assert_atomic_publication_rejection(
+        contaminated_result,
+        excluded_contract="CONTENT_ASSET",
+    )
+
+
+def test_unknown_batch_target_fails_closed_without_publisher_mutation() -> None:
+    result = _valid_result(CASES[5], "unknown-target")
+    unknown_target_result = replace(result, target_contract="UNKNOWN")
+    _assert_atomic_publication_rejection(
+        unknown_target_result,
+        excluded_contract="CONTENT_ASSET",
+    )
