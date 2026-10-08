@@ -364,6 +364,19 @@ No list, dictionary, set, generator, bytearray, tuple subclass, or wrong nested 
 accepted or converted. Every result has exactly one input reference whose contract_name is
 AD_DAILY.
 
+Every runtime-produced SUCCESS, PARTIAL, and ERROR result sets run_id to the exact validated
+caller-supplied calculation run_id and sku to the exact validated AD_DAILY sku. The AD_DAILY
+record run_id remains ingestion provenance only and is never copied into result.run_id.
+
+For every AdvertisingMetricsResult, result.sku equals
+result.input_refs[0].natural_key[2]. The sole input reference natural key is ordered channel,
+stat_date, sku, campaign_id, ad_group_id, so natural_key[2] is the validated AD_DAILY sku. A
+directly constructed result whose sku does not equal input_refs[0].natural_key[2] is an invalid
+whole-result state and fails closed; it is rejected without SKU normalization, rewriting,
+automatic correction, or constructor coercion. No direct-constructor cross-object run-ID invariant
+is required because a standalone result constructor has no independent caller-run object against
+which runtime provenance can be proven.
+
 SUCCESS has exactly three outputs, ordered ctr, cvr, roas, and errors (). PARTIAL has one or more
 ordered ZERO_DENOMINATOR errors and contains only defined outputs in canonical relative order. Its
 output metric set and error metric set are disjoint, and their union is exactly
@@ -537,6 +550,8 @@ overrides primitive or cross-field invalidity.
 - tuple subclass rejection;
 - exact tuple length and element validation;
 - wrong nested carrier type rejection;
+- direct construction with result.sku unequal to input_refs[0].natural_key[2] failing closed through
+  the public carrier constructor;
 - every whole-result invariant for SUCCESS, PARTIAL, and ERROR;
 - rejection of mixed INVALID_INPUT and ZERO_DENOMINATOR errors;
 - field reassignment rejection;
@@ -554,6 +569,20 @@ overrides primitive or cross-field invalidity.
 - existing derived ctr, cvr, and roas non-interference;
 - ingestion run_id and calculation run_id separation;
 - caller run_id exclusion from input_hash;
+- SUCCESS preserving the exact validated caller-supplied calculation run_id through the public
+  runtime calculation entry point;
+- PARTIAL preserving the exact validated caller-supplied calculation run_id through the public
+  runtime calculation entry point;
+- ERROR preserving the exact validated caller-supplied calculation run_id through the public
+  runtime calculation entry point;
+- SUCCESS preserving the exact validated AD_DAILY sku through the public runtime calculation entry
+  point;
+- PARTIAL preserving the exact validated AD_DAILY sku through the public runtime calculation entry
+  point;
+- ERROR preserving the exact validated AD_DAILY sku through the public runtime calculation entry
+  point;
+- every runtime-produced result satisfying result.sku ==
+  result.input_refs[0].natural_key[2];
 - deterministic replay and structural equality;
 - input AD_DAILY mapping non-mutation;
 - absence of AD_DAILY write-back, persistence, publisher mutation, external access, and other side
