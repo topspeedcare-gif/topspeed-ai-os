@@ -23,10 +23,30 @@ _FORMULA_FIELDS = (
 )
 
 
+def _require_exact_str(value: object, field: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{field} must be an exact str")
+
+
+def _require_exact_tuple(
+    value: object,
+    field: str,
+    item_type: type[object],
+) -> None:
+    if type(value) is not tuple:
+        raise TypeError(f"{field} must be an exact tuple")
+    if any(type(item) is not item_type for item in value):
+        raise TypeError(f"{field} items must be exact {item_type.__name__} instances")
+
+
 @dataclass(frozen=True, slots=True)
 class CalculationOutput:
     name: Literal["contribution_margin", "contribution_margin_rate"]
     value: str
+
+    def __post_init__(self) -> None:
+        _require_exact_str(self.name, "name")
+        _require_exact_str(self.value, "value")
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +56,18 @@ class CalculationInputRef:
     source: str
     data_as_of: str
     input_hash: str
+
+    def __post_init__(self) -> None:
+        _require_exact_str(self.contract_name, "contract_name")
+        if (
+            type(self.natural_key) is not tuple
+            or len(self.natural_key) != 1
+            or type(self.natural_key[0]) is not str
+        ):
+            raise TypeError("natural_key must be a one-item exact tuple containing an exact str")
+        _require_exact_str(self.source, "source")
+        _require_exact_str(self.data_as_of, "data_as_of")
+        _require_exact_str(self.input_hash, "input_hash")
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,6 +82,10 @@ class CalculationError:
         "other_variable_cost",
     ]
 
+    def __post_init__(self) -> None:
+        _require_exact_str(self.code, "code")
+        _require_exact_str(self.field, "field")
+
 
 @dataclass(frozen=True, slots=True)
 class CalculationResult:
@@ -61,6 +97,16 @@ class CalculationResult:
     outputs: tuple[CalculationOutput, ...]
     input_refs: tuple[CalculationInputRef, ...]
     errors: tuple[CalculationError, ...]
+
+    def __post_init__(self) -> None:
+        _require_exact_str(self.metric, "metric")
+        _require_exact_str(self.formula_version, "formula_version")
+        _require_exact_str(self.run_id, "run_id")
+        _require_exact_str(self.sku, "sku")
+        _require_exact_str(self.status, "status")
+        _require_exact_tuple(self.outputs, "outputs", CalculationOutput)
+        _require_exact_tuple(self.input_refs, "input_refs", CalculationInputRef)
+        _require_exact_tuple(self.errors, "errors", CalculationError)
 
 
 class UnsupportedFormulaVersionError(ValueError):

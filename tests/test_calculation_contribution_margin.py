@@ -146,6 +146,73 @@ def _restore_context(target, source):
         target.flags[signal] = value
 
 
+class MutableString(str):
+    pass
+
+
+class TupleSubclass(tuple):
+    pass
+
+
+def _mutable_string():
+    value = MutableString("mutable")
+    value.mutable_state = []
+    return value
+
+
+def _valid_carrier(carrier, **changes):
+    if carrier is CalculationOutput:
+        values = {
+            "name": "contribution_margin",
+            "value": "1",
+        }
+    elif carrier is CalculationInputRef:
+        values = {
+            "contract_name": "PRODUCT_MASTER",
+            "natural_key": ("TS-TEST-001",),
+            "source": "manual_verified",
+            "data_as_of": "2026-09-16T09:00:00+09:00",
+            "input_hash": "sha256:" + ("a" * 64),
+        }
+    elif carrier is CalculationError:
+        values = {
+            "code": "MISSING_INPUT",
+            "field": "sale_price",
+        }
+    elif carrier is CalculationResult:
+        values = {
+            "metric": "CONTRIBUTION_MARGIN",
+            "formula_version": CONTRIBUTION_MARGIN_FORMULA_VERSION,
+            "run_id": RUN_ID,
+            "sku": "TS-TEST-001",
+            "status": "SUCCESS",
+            "outputs": (_valid_carrier(CalculationOutput),),
+            "input_refs": (_valid_carrier(CalculationInputRef),),
+            "errors": (_valid_carrier(CalculationError),),
+        }
+    else:
+        raise AssertionError(f"unsupported carrier: {carrier}")
+    values.update(changes)
+    return carrier(**values)
+
+
+SCALAR_FIELDS = (
+    (CalculationOutput, "name"),
+    (CalculationOutput, "value"),
+    (CalculationInputRef, "contract_name"),
+    (CalculationInputRef, "source"),
+    (CalculationInputRef, "data_as_of"),
+    (CalculationInputRef, "input_hash"),
+    (CalculationError, "code"),
+    (CalculationError, "field"),
+    (CalculationResult, "metric"),
+    (CalculationResult, "formula_version"),
+    (CalculationResult, "run_id"),
+    (CalculationResult, "sku"),
+    (CalculationResult, "status"),
+)
+
+
 def test_exact_public_exports_and_constants():
     expected = [
         "CONTRIBUTION_MARGIN_FORMULA_VERSION",
@@ -218,6 +285,147 @@ def test_carriers_and_result_containers_are_immutable(records):
     assert isinstance(result.errors, tuple)
     with pytest.raises(AttributeError):
         result.outputs.append(CalculationOutput("contribution_margin", "0"))
+
+
+def test_valid_direct_carrier_constructors_accept_exact_strings_and_tuples():
+    output = _valid_carrier(CalculationOutput)
+    input_ref = _valid_carrier(CalculationInputRef)
+    error = _valid_carrier(CalculationError)
+    result = _valid_carrier(
+        CalculationResult,
+        outputs=(output,),
+        input_refs=(input_ref,),
+        errors=(error,),
+    )
+    assert output == CalculationOutput("contribution_margin", "1")
+    assert input_ref.natural_key == ("TS-TEST-001",)
+    assert error == CalculationError("MISSING_INPUT", "sale_price")
+    assert result.outputs == (output,)
+    assert result.input_refs == (input_ref,)
+    assert result.errors == (error,)
+    assert type(result.outputs) is tuple
+    assert type(result.input_refs) is tuple
+    assert type(result.errors) is tuple
+
+
+@pytest.mark.parametrize(("carrier", "field"), SCALAR_FIELDS)
+@pytest.mark.parametrize(
+    "invalid_factory",
+    [
+        pytest.param(list, id="list"),
+        pytest.param(dict, id="dict"),
+        pytest.param(set, id="set"),
+        pytest.param(bytearray, id="bytearray"),
+        pytest.param(_mutable_string, id="mutable-str-subclass"),
+    ],
+)
+def test_every_scalar_field_rejects_non_exact_string_values(
+    carrier,
+    field,
+    invalid_factory,
+):
+    invalid = invalid_factory()
+    with pytest.raises(TypeError):
+        _valid_carrier(carrier, **{field: invalid})
+
+
+@pytest.mark.parametrize(
+    "natural_key",
+    [
+        pytest.param(["TS-TEST-001"], id="list"),
+        pytest.param({"TS-TEST-001": True}, id="dict"),
+        pytest.param({"TS-TEST-001"}, id="set"),
+        pytest.param(bytearray(b"TS"), id="bytearray"),
+        pytest.param((), id="empty-tuple"),
+        pytest.param(("A", "B"), id="multi-item-tuple"),
+        pytest.param((123,), id="non-string-item"),
+        pytest.param(TupleSubclass(("TS-TEST-001",)), id="tuple-subclass"),
+    ],
+)
+def test_input_ref_rejects_invalid_natural_key_without_coercion(natural_key):
+    with pytest.raises(TypeError):
+        _valid_carrier(CalculationInputRef, natural_key=natural_key)
+
+
+def _invalid_result_container(kind, item):
+    if kind == "list":
+        return [item]
+    if kind == "dict":
+        return {"item": item}
+    if kind == "set":
+        return {item}
+    if kind == "bytearray":
+        return bytearray()
+    if kind == "generator":
+        return (value for value in (item,))
+    if kind == "tuple-subclass":
+        return TupleSubclass((item,))
+    raise AssertionError(f"unsupported container kind: {kind}")
+
+
+@pytest.mark.parametrize("field", ["outputs", "input_refs", "errors"])
+@pytest.mark.parametrize(
+    "container_kind",
+    ["list", "dict", "set", "bytearray", "generator", "tuple-subclass"],
+)
+def test_result_rejects_non_exact_tuple_containers_without_conversion(
+    field,
+    container_kind,
+):
+    item_by_field = {
+        "outputs": _valid_carrier(CalculationOutput),
+        "input_refs": _valid_carrier(CalculationInputRef),
+        "errors": _valid_carrier(CalculationError),
+    }
+    invalid = _invalid_result_container(container_kind, item_by_field[field])
+    with pytest.raises(TypeError):
+        _valid_carrier(CalculationResult, **{field: invalid})
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_item"),
+    [
+        ("outputs", "not-output"),
+        ("input_refs", "not-ref"),
+        ("errors", "not-error"),
+        ("outputs", CalculationInputRef),
+        ("input_refs", CalculationError),
+        ("errors", CalculationOutput),
+    ],
+)
+def test_result_rejects_wrong_exact_tuple_element_types(field, wrong_item):
+    item = wrong_item if isinstance(wrong_item, str) else _valid_carrier(wrong_item)
+    with pytest.raises(TypeError):
+        _valid_carrier(CalculationResult, **{field: (item,)})
+
+
+def test_valid_result_graph_is_deeply_immutable():
+    output = _valid_carrier(CalculationOutput)
+    input_ref = _valid_carrier(CalculationInputRef)
+    error = _valid_carrier(CalculationError)
+    result = _valid_carrier(
+        CalculationResult,
+        outputs=(output,),
+        input_refs=(input_ref,),
+        errors=(error,),
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        result.status = "ERROR"
+    with pytest.raises((FrozenInstanceError, AttributeError, TypeError)):
+        result.new_attribute = "rejected"
+    with pytest.raises(TypeError):
+        result.outputs[0] = output
+    with pytest.raises(TypeError):
+        result.input_refs[0] = input_ref
+    with pytest.raises(TypeError):
+        result.errors[0] = error
+    with pytest.raises(FrozenInstanceError):
+        output.value = "2"
+    with pytest.raises(FrozenInstanceError):
+        input_ref.source = "changed"
+    with pytest.raises(FrozenInstanceError):
+        error.code = "INVALID_INPUT"
 
 
 def test_published_fixture_success_shape_values_and_hash(records):
