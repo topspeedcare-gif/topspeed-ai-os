@@ -215,6 +215,11 @@ SCALAR_FIELDS = (
 
 def test_exact_public_exports_and_constants():
     expected = [
+        "AD_METRICS_FORMULA_VERSION",
+        "AdvertisingMetricOutput",
+        "AdvertisingMetricsError",
+        "AdvertisingMetricsInputRef",
+        "AdvertisingMetricsResult",
         "CONTRIBUTION_MARGIN_FORMULA_VERSION",
         "CONTRIBUTION_MARGIN_METRIC",
         "CalculationError",
@@ -222,6 +227,7 @@ def test_exact_public_exports_and_constants():
         "CalculationOutput",
         "CalculationResult",
         "UnsupportedFormulaVersionError",
+        "calculate_ad_daily_metrics",
         "calculate_product_master_contribution_margin",
     ]
     assert calculation_package.__all__ == expected
