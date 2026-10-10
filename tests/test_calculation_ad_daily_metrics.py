@@ -542,7 +542,23 @@ def test_direct_constructor_requires_exact_sku_string_and_coherence_not_sku_gram
         )
 
 
-@pytest.mark.parametrize("value", ["-1", "1.0000", "0.0", "1e2", "1.", "0.12345"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "-1",
+        "1.0000",
+        "0.0",
+        "1e2",
+        "1.",
+        "0.12345",
+        pytest.param("\u00b2", id="superscript-two"),
+        pytest.param("\u0660", id="arabic-indic-zero"),
+        pytest.param("\u0661", id="arabic-indic-one"),
+        pytest.param("\uff11", id="fullwidth-one"),
+        pytest.param("1\u0660", id="ascii-arabic-indic"),
+        pytest.param("\u06601", id="arabic-indic-ascii"),
+    ],
+)
 def test_output_rejects_noncanonical_published_representations(value):
     with pytest.raises(ValueError):
         AdvertisingMetricOutput("ctr", value)
@@ -551,6 +567,11 @@ def test_output_rejects_noncanonical_published_representations(value):
 @pytest.mark.parametrize("value", ["0", "0.5", "1", "12.3456"])
 def test_output_accepts_published_canonical_representations(value):
     assert AdvertisingMetricOutput("roas", value).value == value
+
+
+def test_runtime_calculated_outputs_are_ascii_canonical(records):
+    result = calculate_ad_daily_metrics(_ad_daily(records), run_id=RUN_ID)
+    assert all(output.value.isascii() for output in result.outputs)
 
 
 def test_exact_scalar_types_reject_mutable_string_subclasses():

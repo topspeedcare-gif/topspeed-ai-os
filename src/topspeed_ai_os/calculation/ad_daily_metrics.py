@@ -41,9 +41,14 @@ def _validate_canonical_output(value: str) -> None:
     if not value or value.startswith("-") or value.count(".") > 1:
         raise ValueError("value must be a canonical nonnegative fixed-point string")
     whole, separator, fractional = value.partition(".")
-    if not whole.isdigit():
+    if not whole.isascii() or not whole.isdigit():
         raise ValueError("value must be a canonical nonnegative fixed-point string")
-    if separator and (not fractional.isdigit() or len(fractional) > 4 or fractional.endswith("0")):
+    if separator and (
+        not fractional.isascii()
+        or not fractional.isdigit()
+        or len(fractional) > 4
+        or fractional.endswith("0")
+    ):
         raise ValueError("value must have one to four non-trailing-zero fractional digits")
     if all(character in {"0", "."} for character in value) and value != "0":
         raise ValueError("numeric zero must be exactly '0'")
