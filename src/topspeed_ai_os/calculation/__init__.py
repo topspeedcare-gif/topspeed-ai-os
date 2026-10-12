@@ -18,6 +18,14 @@ from .contribution_margin import (
     UnsupportedFormulaVersionError,
     calculate_product_master_contribution_margin,
 )
+from .inventory_demand_velocity import (
+    INVENTORY_DEMAND_VELOCITY_FORMULA_VERSION,
+    InventoryDemandVelocityError,
+    InventoryDemandVelocityInputRef,
+    InventoryDemandVelocityOutput,
+    InventoryDemandVelocityResult,
+    calculate_inventory_demand_velocity,
+)
 
 # Approved public API order is normative.
 # ruff: ignore[RUF022]
@@ -36,4 +44,10 @@ __all__ = [
     "UnsupportedFormulaVersionError",
     "calculate_ad_daily_metrics",
     "calculate_product_master_contribution_margin",
+    "INVENTORY_DEMAND_VELOCITY_FORMULA_VERSION",
+    "InventoryDemandVelocityError",
+    "InventoryDemandVelocityInputRef",
+    "InventoryDemandVelocityOutput",
+    "InventoryDemandVelocityResult",
+    "calculate_inventory_demand_velocity",
 ]

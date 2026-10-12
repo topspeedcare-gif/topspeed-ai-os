@@ -229,6 +229,12 @@ def test_exact_public_exports_and_constants():
         "UnsupportedFormulaVersionError",
         "calculate_ad_daily_metrics",
         "calculate_product_master_contribution_margin",
+        "INVENTORY_DEMAND_VELOCITY_FORMULA_VERSION",
+        "InventoryDemandVelocityError",
+        "InventoryDemandVelocityInputRef",
+        "InventoryDemandVelocityOutput",
+        "InventoryDemandVelocityResult",
+        "calculate_inventory_demand_velocity",
     ]
     assert calculation_package.__all__ == expected
     assert CONTRIBUTION_MARGIN_METRIC == "CONTRIBUTION_MARGIN"

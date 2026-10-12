@@ -171,6 +171,12 @@ def test_exact_public_exports_constants_and_contribution_identities():
         "UnsupportedFormulaVersionError",
         "calculate_ad_daily_metrics",
         "calculate_product_master_contribution_margin",
+        "INVENTORY_DEMAND_VELOCITY_FORMULA_VERSION",
+        "InventoryDemandVelocityError",
+        "InventoryDemandVelocityInputRef",
+        "InventoryDemandVelocityOutput",
+        "InventoryDemandVelocityResult",
+        "calculate_inventory_demand_velocity",
     ]
     assert AD_METRICS_FORMULA_VERSION == "topspeed.calculation.ad_metrics.v1"
     assert calculation_package.CalculationResult is ContributionMarginResultIdentity
