@@ -235,6 +235,12 @@ def test_exact_public_exports_and_constants():
         "InventoryDemandVelocityOutput",
         "InventoryDemandVelocityResult",
         "calculate_inventory_demand_velocity",
+        "INVENTORY_STOCK_DAYS_FORMULA_VERSION",
+        "InventoryStockDaysError",
+        "InventoryStockDaysInputRef",
+        "InventoryStockDaysOutput",
+        "InventoryStockDaysResult",
+        "calculate_inventory_stock_days",
     ]
     assert calculation_package.__all__ == expected
     assert CONTRIBUTION_MARGIN_METRIC == "CONTRIBUTION_MARGIN"

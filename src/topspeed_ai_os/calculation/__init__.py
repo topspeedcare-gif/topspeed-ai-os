@@ -26,6 +26,14 @@ from .inventory_demand_velocity import (
     InventoryDemandVelocityResult,
     calculate_inventory_demand_velocity,
 )
+from .inventory_stock_days import (
+    INVENTORY_STOCK_DAYS_FORMULA_VERSION,
+    InventoryStockDaysError,
+    InventoryStockDaysInputRef,
+    InventoryStockDaysOutput,
+    InventoryStockDaysResult,
+    calculate_inventory_stock_days,
+)
 
 # Approved public API order is normative.
 # ruff: ignore[RUF022]
@@ -50,4 +58,10 @@ __all__ = [
     "InventoryDemandVelocityOutput",
     "InventoryDemandVelocityResult",
     "calculate_inventory_demand_velocity",
+    "INVENTORY_STOCK_DAYS_FORMULA_VERSION",
+    "InventoryStockDaysError",
+    "InventoryStockDaysInputRef",
+    "InventoryStockDaysOutput",
+    "InventoryStockDaysResult",
+    "calculate_inventory_stock_days",
 ]

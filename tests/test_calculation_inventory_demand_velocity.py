@@ -52,6 +52,12 @@ FINAL_EXPORTS = [
     "InventoryDemandVelocityOutput",
     "InventoryDemandVelocityResult",
     "calculate_inventory_demand_velocity",
+    "INVENTORY_STOCK_DAYS_FORMULA_VERSION",
+    "InventoryStockDaysError",
+    "InventoryStockDaysInputRef",
+    "InventoryStockDaysOutput",
+    "InventoryStockDaysResult",
+    "calculate_inventory_stock_days",
 ]
 
 
