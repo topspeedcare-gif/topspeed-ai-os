@@ -5,7 +5,7 @@
 - Source literal: `topspeed.repository.policy_authority.inventory_safety_stock.v1`
 - Policy version: `TOPSPEED_SAFETY_STOCK_POLICY_V1`
 - Approval authority: `TOPSPEED Human Architecture Owner`
-- Effective datetime: EXTERNAL HUMAN EVIDENCE REQUIRED
+- Effective datetime: `2026-10-15T16:05:35+09:00`
 - Public API expansion: NONE
 
 ## 1. Decision and authority
@@ -21,11 +21,13 @@ The Human-approved policy remains unchanged:
 policy_version = TOPSPEED_SAFETY_STOCK_POLICY_V1
 approval_authority = TOPSPEED Human Architecture Owner
 authority_status = APPROVED
+data_as_of = 2026-10-15T16:05:35+09:00
 safety_stock_days = 7
 ```
 
-The exact initial policy effective datetime remains an external Human-evidence prerequisite. This
-ADR does not invent, derive, infer, or select that value.
+The Human Architecture Owner supplied and approved the exact initial policy effective datetime as
+`2026-10-15T16:05:35+09:00`. This value is preserved verbatim as `_POLICY_RECORD.data_as_of`.
+It is not normalized, converted, truncated, inferred, or replaced by a runtime-derived value.
 
 ## 2. Exact Architecture identifiers
 
@@ -122,9 +124,10 @@ source = topspeed.repository.policy_authority.inventory_safety_stock.v1
 safety_stock_days = exact built-in int 7
 ```
 
-`data_as_of` is the exact Human-approved policy effective datetime represented as a canonical,
-timezone-bearing ISO-8601 built-in string. Its value remains pending external Human evidence. The
-Builder must not invent, derive, normalize, or substitute it.
+`data_as_of` is the exact Human-approved policy effective datetime represented as the canonical,
+timezone-bearing ISO-8601 built-in string `2026-10-15T16:05:35+09:00`. The future record must use
+this value verbatim. The Builder must not change, normalize, convert to UTC, truncate, derive, or
+substitute it. No `effective_datetime` field is introduced.
 
 `input_hash` is the exact existing canonical lowercase value matching
 `^sha256:[0-9a-f]{64}$`, calculated from the seven non-hash fields under Section 5.
@@ -231,16 +234,20 @@ The exact exception mapping is:
 No exception may be wrapped, translated, suppressed, replaced, converted into a result, repaired,
 normalized, coerced, or replaced by a fallback policy.
 
-## 9. Effective datetime hard gate
+## 9. Effective datetime evidence and dependency gate
 
-The exact initial policy effective datetime is not yet available as approved Human evidence. This
-is not a new formula or business-policy decision.
+The exact initial policy effective datetime prerequisite is satisfied by Human evidence. The
+approved value is exactly:
 
-The docs-only Architecture ADR may be audited and published without inventing the value. No
-placeholder is a valid production value. A producer implementation work order remains ineligible
-until the Human evidence owner supplies and approves the exact canonical effective datetime.
+```text
+_POLICY_RECORD.data_as_of = "2026-10-15T16:05:35+09:00"
+```
 
-Codex, the future Builder, and the future producer must not select or derive the value from:
+Human evidence satisfies only the effective-datetime prerequisite. `P5-ISS-DEP-A1-F-001` remains
+open until Policy Authority Producer implementation, audit, publication, and exact-SHA CI closure.
+The evidence does not authorize implementation and does not close that dependency.
+
+Codex, the future Builder, and the future producer must not replace or derive the value from:
 
 - current time;
 - the Human approval-message time;
@@ -249,8 +256,8 @@ Codex, the future Builder, and the future producer must not select or derive the
 - file modification time; or
 - any other inferred timestamp.
 
-The effective datetime is an explicit external prerequisite, not an unfinished Architecture
-choice.
+The approved `data_as_of` is fixed V1 record evidence, not a caller input, environment value,
+fallback timestamp, or unfinished Builder Architecture choice.
 
 ## 10. Authority meaning
 
@@ -286,7 +293,60 @@ publication path. No change is applied in place under the existing V1 identity.
 effective datetime. The producer validates and projects approved evidence; it does not create or
 delegate approval authority.
 
-## 12. Public API and Contract boundary
+## 12. Canonical carrier foundation sequencing
+
+The canonical future implementation home is exactly:
+
+```text
+src/topspeed_ai_os/calculation/inventory_safety_stock.py
+```
+
+The canonical carrier class is exactly:
+
+```text
+topspeed_ai_os.calculation.inventory_safety_stock.InventorySafetyStockPolicyAuthority
+```
+
+The future separately authorized Producer implementation Slice may establish this exact carrier
+foundation at that module path because the producer return annotation and returned object must
+resolve to that exact canonical class identity. The carrier semantics are not reopened. The
+foundation must preserve the already approved exact class name, fields, field order, scalar types,
+nullability, frozen and slotted semantics, constructor invariants, and canonical lexical
+requirements. No alternate or duplicate carrier is permitted.
+
+During that future Producer implementation Slice, `topspeed_ai_os.calculation.__all__` must remain
+unchanged. `InventorySafetyStockPolicyAuthority` may exist in
+`topspeed_ai_os.calculation.inventory_safety_stock` as the single canonical implementation
+identity, but it must not yet be exposed through package-level public exports. The producer must
+import and return that exact class, and `type(produced_authority) is
+InventorySafetyStockPolicyAuthority` must hold.
+
+Before the separately authorized Safety Stock runtime Slice, none of the following six symbols may
+be exposed through `topspeed_ai_os.calculation.__all__`:
+
+1. `INVENTORY_SAFETY_STOCK_FORMULA_VERSION`
+2. `InventorySafetyStockPolicyAuthority`
+3. `InventorySafetyStockInputRef`
+4. `InventorySafetyStockOutput`
+5. `InventorySafetyStockResult`
+6. `calculate_inventory_safety_stock`
+
+The future Safety Stock runtime Slice must reuse the already-created canonical
+`InventorySafetyStockPolicyAuthority` without redefining, moving, wrapping, subclassing, or
+replacing it. That Slice must implement the remaining approved Safety Stock runtime symbols and
+expose all six symbols atomically, preserve all existing Calculation exports in their existing
+order, and add no seventh Safety Stock public symbol.
+
+The following are forbidden during the Producer foundation Slice:
+
+- a second carrier definition or duplicate dataclass;
+- a protocol, Mapping, compatibility-wrapper, or subclass substitute;
+- dynamic carrier construction;
+- re-export from `topspeed_ai_os.policy_authority`;
+- modification of `topspeed_ai_os.calculation.__all__`; and
+- partial Safety Stock package API activation.
+
+## 13. Public API and Contract boundary
 
 This producer and its record remain internal. No symbol is added to public `__all__` exports or the
 package root. The published Inventory Safety Stock public API remains exactly six symbols and is
@@ -300,7 +360,7 @@ The producer's output is the already approved exact
 `InventorySafetyStockPolicyAuthority`; no additional public field, carrier, result, token, or
 authority proof is introduced.
 
-## 13. Pure side-effect boundary
+## 14. Pure side-effect boundary
 
 The future producer performs no:
 
@@ -317,7 +377,7 @@ The future producer performs no:
 - Inventory Stock Days, Reorder Point, or Recommended Order Quantity calculation; or
 - external business write.
 
-## 14. Future producer implementation test obligations
+## 15. Future producer implementation test obligations
 
 A separately authorized producer implementation work order must test:
 
@@ -329,7 +389,7 @@ A separately authorized producer implementation work order must test:
 - all exact fixed literals;
 - exact built-in scalar enforcement and subclass rejection;
 - bool rejection for `safety_stock_days`;
-- canonical timezone-bearing effective datetime acceptance;
+- exact approved `2026-10-15T16:05:35+09:00` `data_as_of` acceptance;
 - naive, malformed, noncanonical, and substituted datetime rejection;
 - the exact payload key set and order;
 - stored and recomputed hash equality;
@@ -351,10 +411,10 @@ A separately authorized producer implementation work order must test:
 - exact changed-path scope; and
 - sensitive-material scan.
 
-Tests and implementation remain ineligible until the exact effective datetime is supplied and
-approved as Human evidence.
+The effective-datetime prerequisite is satisfied by Human evidence. Tests and implementation
+remain not authorized until a separate implementation work order is approved.
 
-## 15. Runtime and downstream prohibitions
+## 16. Runtime and downstream prohibitions
 
 This ADR does not authorize:
 
@@ -372,11 +432,10 @@ Publication of this docs-only ADR does not satisfy the producer implementation p
 future producer publication does not by itself authorize Safety Stock runtime or establish the
 Reorder Point materialization path.
 
-## 16. Explicit non-decisions
+## 17. Explicit non-decisions
 
 This ADR does not decide:
 
-- the evidence-pending effective datetime value;
 - future policy versions or their record identities;
 - production wiring or allowlist implementation;
 - producer implementation details beyond this exact Architecture;
@@ -390,18 +449,29 @@ This ADR does not decide:
 
 Each requires its own evidence or Architecture Gate.
 
-## 17. Finding reconciliation
+## 18. Finding reconciliation
 
 ```text
-P5-ISS-DEP-A1-F-001 = DEFINED; OPEN UNTIL PRODUCER IMPLEMENTATION CLOSURE
 P5-ISSPA-WO-A2-F-001 = CLOSED
 P5-ISSPA-WO-A2-F-002 = CLOSED
+P5-ISS-DEP-A1-F-001 = OPEN
+  effective-datetime prerequisite = SATISFIED BY HUMAN EVIDENCE
+  exact approved data_as_of = 2026-10-15T16:05:35+09:00
+  closure condition = POLICY AUTHORITY PRODUCER IMPLEMENTATION, AUDIT, PUBLICATION,
+    AND EXACT-SHA CI CLOSURE
+P5-ISSPA-DEP-A1-F-002 = CLOSED BY CORRECTED CARRIER-SEQUENCING ARCHITECTURE
+P5-ISSPA-SEQ-A2-F-001 = CLOSED
+  final Human data_as_of = 2026-10-15T16:05:35+09:00
+P5-ISSPA-SEQ-A2-F-002 = CLOSED
+  exact field = data_as_of
+P5-ISSPA-SEQ-A2-F-003 = CLOSED
+  complete Producer dependency remains OPEN
 Residual Builder Architecture choice = NONE
-Additional Human evidence required = YES; exact effective datetime
+Additional Human effective-datetime evidence required = NO
 New Human policy decision required = NO
 ```
 
-## 18. Phase and authorization state
+## 19. Phase and authorization state
 
 ```text
 PHASE 4 = COMPLETE
@@ -410,7 +480,8 @@ PHASE 6 = NOT STARTED
 
 Policy Authority Producer Architecture = APPROVED
 Policy Authority Producer docs-only ADR = AUTHORIZED
-Policy Authority Producer implementation Work Order = INELIGIBLE
+Effective-datetime prerequisite = SATISFIED BY HUMAN EVIDENCE
+Policy Authority Producer implementation Work Order = NOT AUTHORIZED
 Policy Authority Producer implementation = NOT AUTHORIZED
 Safety Stock runtime = NOT AUTHORIZED
 INVENTORY materialization = NOT AUTHORIZED
