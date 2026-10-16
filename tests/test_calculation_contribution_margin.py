@@ -241,6 +241,12 @@ def test_exact_public_exports_and_constants():
         "InventoryStockDaysOutput",
         "InventoryStockDaysResult",
         "calculate_inventory_stock_days",
+        "INVENTORY_SAFETY_STOCK_FORMULA_VERSION",
+        "InventorySafetyStockPolicyAuthority",
+        "InventorySafetyStockInputRef",
+        "InventorySafetyStockOutput",
+        "InventorySafetyStockResult",
+        "calculate_inventory_safety_stock",
     ]
     assert calculation_package.__all__ == expected
     assert CONTRIBUTION_MARGIN_METRIC == "CONTRIBUTION_MARGIN"

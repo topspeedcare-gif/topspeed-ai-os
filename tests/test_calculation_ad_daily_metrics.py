@@ -183,6 +183,12 @@ def test_exact_public_exports_constants_and_contribution_identities():
         "InventoryStockDaysOutput",
         "InventoryStockDaysResult",
         "calculate_inventory_stock_days",
+        "INVENTORY_SAFETY_STOCK_FORMULA_VERSION",
+        "InventorySafetyStockPolicyAuthority",
+        "InventorySafetyStockInputRef",
+        "InventorySafetyStockOutput",
+        "InventorySafetyStockResult",
+        "calculate_inventory_safety_stock",
     ]
     assert AD_METRICS_FORMULA_VERSION == "topspeed.calculation.ad_metrics.v1"
     assert calculation_package.CalculationResult is ContributionMarginResultIdentity

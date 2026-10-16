@@ -58,6 +58,12 @@ FINAL_EXPORTS = [
     "InventoryStockDaysOutput",
     "InventoryStockDaysResult",
     "calculate_inventory_stock_days",
+    "INVENTORY_SAFETY_STOCK_FORMULA_VERSION",
+    "InventorySafetyStockPolicyAuthority",
+    "InventorySafetyStockInputRef",
+    "InventorySafetyStockOutput",
+    "InventorySafetyStockResult",
+    "calculate_inventory_safety_stock",
 ]
 
 

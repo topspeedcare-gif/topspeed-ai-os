@@ -34,6 +34,42 @@ _APPROVED_VALUES = {
     "safety_stock_days": 7,
     "input_hash": _EXPECTED_HASH,
 }
+_PRIOR_CALCULATION_EXPORTS = (
+    "AD_METRICS_FORMULA_VERSION",
+    "AdvertisingMetricOutput",
+    "AdvertisingMetricsError",
+    "AdvertisingMetricsInputRef",
+    "AdvertisingMetricsResult",
+    "CONTRIBUTION_MARGIN_FORMULA_VERSION",
+    "CONTRIBUTION_MARGIN_METRIC",
+    "CalculationError",
+    "CalculationInputRef",
+    "CalculationOutput",
+    "CalculationResult",
+    "UnsupportedFormulaVersionError",
+    "calculate_ad_daily_metrics",
+    "calculate_product_master_contribution_margin",
+    "INVENTORY_DEMAND_VELOCITY_FORMULA_VERSION",
+    "InventoryDemandVelocityError",
+    "InventoryDemandVelocityInputRef",
+    "InventoryDemandVelocityOutput",
+    "InventoryDemandVelocityResult",
+    "calculate_inventory_demand_velocity",
+    "INVENTORY_STOCK_DAYS_FORMULA_VERSION",
+    "InventoryStockDaysError",
+    "InventoryStockDaysInputRef",
+    "InventoryStockDaysOutput",
+    "InventoryStockDaysResult",
+    "calculate_inventory_stock_days",
+)
+_SAFETY_STOCK_EXPORTS = (
+    "INVENTORY_SAFETY_STOCK_FORMULA_VERSION",
+    "InventorySafetyStockPolicyAuthority",
+    "InventorySafetyStockInputRef",
+    "InventorySafetyStockOutput",
+    "InventorySafetyStockResult",
+    "calculate_inventory_safety_stock",
+)
 
 
 def _carrier(**overrides: object) -> InventorySafetyStockPolicyAuthority:
@@ -100,8 +136,17 @@ def test_producer_record_and_signature_are_exact_and_internal() -> None:
     assert not hasattr(policy_authority, "_POLICY_RECORD")
     assert not hasattr(policy_authority, "_produce_inventory_safety_stock_policy_authority")
     assert "InventorySafetyStockPolicyAuthority" not in policy_authority.__dict__
-    assert not any(name.startswith("INVENTORY_SAFETY_STOCK") for name in calculation_all)
-    assert "InventorySafetyStockPolicyAuthority" not in calculation_all
+    assert calculation_all == [*_PRIOR_CALCULATION_EXPORTS, *_SAFETY_STOCK_EXPORTS]
+    assert (
+        tuple(
+            name
+            for name in calculation_all
+            if name.startswith(("INVENTORY_SAFETY_STOCK", "InventorySafetyStock"))
+            or name == "calculate_inventory_safety_stock"
+        )
+        == _SAFETY_STOCK_EXPORTS
+    )
+    assert not any(name.startswith("_") for name in calculation_all)
 
 
 def test_producer_returns_fresh_exact_equal_carriers() -> None:
