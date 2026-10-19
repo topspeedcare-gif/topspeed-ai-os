@@ -2,7 +2,7 @@
 
 DOCUMENT STATUS: DERIVED / NON-NORMATIVE
 
-EVIDENCE CUTOFF: 2026-09-30
+EVIDENCE CUTOFF: 2026-10-19
 
 ## TRUTH PRIORITY
 
@@ -13,6 +13,8 @@ EVIDENCE CUTOFF: 2026-09-30
 If this document conflicts with repository source, Frozen documents, or exact evidence, this document is stale or incorrect.
 
 ## CURRENT PHASE
+
+LATEST AUDITED AND PUBLISHED IMPLEMENTATION / ARCHITECTURE BASELINE = `d7eb93ad63d4bdb1529027367a9369c56cec0617`
 
 PHASE 4 — Data Hub Adapter
 
@@ -26,34 +28,29 @@ PHASE 3 overall = PASS
 
 PHASE 4 entry = COMPLETE / AUTHORIZED
 
-PHASE 4 implementation = IN PROGRESS
+PHASE 4 implementation = COMPLETE
 
-PHASE 4 overall = NOT COMPLETE
+PHASE 4 overall = COMPLETE
 
-PHASE 5 = NOT STARTED
+PHASE 5 = NOT COMPLETE
+
+PHASE 6 = NOT STARTED
 
 ## CANONICAL BRANCH
 
 `audit/phase4-data-hub-adapter`
 
-## CANONICAL IMPLEMENTATION HEAD
+## PUBLISHED REPOSITORY BASELINES
 
-Implementation/evidence baseline:
+LATEST AUDITED AND PUBLISHED IMPLEMENTATION / ARCHITECTURE BASELINE = `d7eb93ad63d4bdb1529027367a9369c56cec0617`.
 
-`a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+HANDOFF-only documentation correction commits are excluded from this implementation / Architecture baseline.
 
-CANONICAL IMPLEMENTATION HEAD in this document means: “Latest independently audited and published implementation/evidence baseline commit.”
+The actual local and remote branch tips must be resolved directly from Git at the start of every task.
 
-HANDOFF-only documentation commits are excluded. A later HANDOFF documentation commit can therefore make the actual Git branch HEAD differ from CANONICAL IMPLEMENTATION HEAD. These values must not be assumed to be identical.
+`origin/main` at baseline verification = `f51dde902e1d460f9e55ff41841aa80970ea723f`.
 
-Reference baselines:
-
-- Actual branch HEAD before this HANDOFF update: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
-- `origin/audit/phase4-data-hub-adapter`: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
-- `origin/main`: `f51dde902e1d460f9e55ff41841aa80970ea723f`
-- Architecture Freeze: `b45aa64675bbb903236bdf2a4309d5525b9fcba5`
-
-Actual branch HEAD must always be resolved independently from Git at the beginning of every execution task.
+Architecture Freeze: `b45aa64675bbb903236bdf2a4309d5525b9fcba5`.
 
 ## IMPLEMENTED
 
@@ -90,6 +87,7 @@ The following published synthetic/internal architecture-proof Slices currently e
 3. `PRODUCT_MASTER`
 4. `INVENTORY`
 5. `PRODUCT_FACT`
+6. `CONTENT_ASSET`
 
 The Phase 4 implementation includes, as applicable per Slice:
 
@@ -109,6 +107,8 @@ The Phase 4 implementation includes, as applicable per Slice:
 - timezone-aware `created_at`
 - `run_id` correlation
 - optional `task_id` correlation where supplied
+- aggregate row traceability
+- publisher schema coherence
 
 `PRODUCT_FACT` does not perform external SKU mapping. It uses direct internal SKU input, mandatory `known_skus` referential validation, and a referential-context-bound fingerprint. Its policy is UNVERIFIED candidate ingestion only: the Adapter does not verify truth, create VERIFIED facts, or implement the later independent verification lifecycle. Fact IDs are issued through `topspeed_ai_os.core.ids`; package-root export through `topspeed_ai_os.core` is not part of this Slice.
 
@@ -121,7 +121,25 @@ PRODUCT_FACT evidence:
 - Publication Gate: PASS
 - Remote published audit HEAD: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
 
-These five Slices are synthetic/internal architecture proofs. They do not establish production persistence, production business-data synchronization, or a complete AI employee system. PHASE 4 implementation is IN PROGRESS and PHASE 4 overall is NOT COMPLETE.
+These six Slices are synthetic/internal architecture proofs. They do not establish production persistence, production business-data synchronization, or a complete AI employee system. PHASE 4 implementation and PHASE 4 overall are COMPLETE.
+
+## PHASE 5 PUBLISHED SCOPE
+
+Published runtime scope includes:
+
+- Contribution Margin
+- AD Daily Advertising Metrics
+- Inventory Demand Velocity
+- Inventory Stock Days
+- Safety Stock Policy Authority Producer
+- Safety Stock Runtime
+
+Published Architecture-only scope includes:
+
+- Inventory Reorder Point V1
+- Inventory Safety Stock Read-Only Projection V1
+
+The Safety Stock Read-Only Projection runtime Work Order has NOT YET BEEN ISSUED OR AUTHORIZED. Its runtime is not implemented and is not operationally authorized. Actual INVENTORY write-back is not authorized. The authoritative supplier-contract `lead_time_days` path is still required. Reorder Point runtime is not implemented or authorized. Recommended Order Quantity is not authorized.
 
 ## TESTED
 
@@ -147,10 +165,10 @@ HANDOFF publication commit: `01028976d7fccd725d0a5e1dda88a78dfdb957ea`
 
 Publication CI run: `35581694098` = PASS
 
-### Latest PHASE 4 publication evidence
+### Historical PHASE 4 publication evidence — PRODUCT_FACT
 
-- Canonical implementation baseline: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
-- Latest audited local full suite: 1283 passed / 0 failed
+- Historical PRODUCT_FACT implementation baseline: `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- Audited local full suite at that baseline: 1283 passed / 0 failed
 - Publication-diff audit: 0 newly introduced skip, 0 newly introduced skipif, 0 newly introduced xfail
 - Workflow: `Phase 2 Contract CI`
 - Run: `36672337676`
@@ -166,7 +184,21 @@ Publication CI run: `35581694098` = PASS
 - `secret-scan` job: SUCCESS
 - gitleaks: SUCCESS
 
-CI PASS and operational LIVE PASS are separate evidence classes.
+### Latest exact-SHA publication CI
+
+- Baseline SHA for this exact-SHA CI evidence: `d7eb93ad63d4bdb1529027367a9369c56cec0617`
+- Workflow: `Phase 2 Contract CI`
+- Run: `38877739190`
+- URL: <https://github.com/topspeedcare-gif/topspeed-ai-os/actions/runs/38877739190>
+- Event: push
+- Head branch: `audit/phase4-data-hub-adapter`
+- Head SHA: `d7eb93ad63d4bdb1529027367a9369c56cec0617`
+- Run attempt: 1
+- Status / conclusion: completed / success
+- `quality` job: success
+- `secret-scan` job: success
+
+CI PASS and operational LIVE PASS are separate evidence classes. CI is software verification evidence; it does not establish business performance.
 
 ## LIVE VERIFIED
 
@@ -265,7 +297,7 @@ BLOCKED means an actual source request could not be reached because a prerequisi
 
 Authentication re-entry for both sources is resolved. No current authentication blocker remains.
 
-No current PHASE 4 prerequisite is known to be blocked, and PRODUCT_FACT publication is not blocked. PHASE 4 overall remains NOT COMPLETE because its scope is incomplete, not because it is blocked.
+No current PHASE 4 prerequisite is known to be blocked. PHASE 4 is COMPLETE, not blocked. PHASE 5 remains NOT COMPLETE because its scope is incomplete, not because it is blocked.
 
 ## UNKNOWN / INSUFFICIENT EVIDENCE
 
@@ -288,7 +320,7 @@ Expired token, wrong account, wrong scope, API configuration, and Codex defect r
 6. GitHub Actions produced Node.js deprecation warnings. These warnings did not fail the audited CI run.
 7. The workflow name remains `Phase 2 Contract CI` even though its current verification scope includes later work, creating possible operational naming confusion.
 8. During the 2026-09-21 laptop Evidence Gate, the canonical Python launcher was reported unavailable in that execution context. Root cause is not established. During that Evidence Gate, docs-only UTF-8 validation used a strict .NET UTF-8 decoder. This environment/tooling WARN is separate from historical HTTP 401 results and current operational LIVE PASS results.
-9. The five published Phase 4 Slices are synthetic/internal architecture proofs, not production persistence or production synchronization.
+9. The six published Phase 4 Slices are synthetic/internal architecture proofs, not production persistence or production synchronization.
 
 These limitations and risks do not change the current Drive or Coupang operational PASS.
 
@@ -297,8 +329,9 @@ These limitations and risks do not change the current Drive or Coupang operation
 - Resolve the actual branch and HEAD before every execution.
 - Verify working tree state before every execution.
 - Preserve Frozen documents and Data Contract authority.
-- The next Phase 4 Slice requires its own Architecture Gate.
-- Do not enter PHASE 5 before an explicit PHASE 4 completion decision and authorization.
+- PHASE 4 is COMPLETE; no additional Phase 4 Slice is selected by this HANDOFF.
+- PHASE 5 is NOT COMPLETE; this HANDOFF does not authorize new runtime implementation.
+- The next gate is Audit1 eligibility determination for a future separately authorized Safety Stock Read-Only Projection runtime Work Order.
 - Future LIVE remains Source-specific, bounded, read-only unless separately authorized, and fail-closed.
 - Do not repeat a LIVE call without a new operational reason.
 - Future credential rotation or expiry requires a bounded Source-specific Gate.
@@ -309,9 +342,11 @@ These limitations and risks do not change the current Drive or Coupang operation
 
 ## FORBIDDEN NEXT ACTIONS
 
-- Next Phase 4 Slice implementation without its separate Architecture Gate
-- Declaring PHASE 4 complete without explicit completion reevaluation
-- PHASE 5 implementation before PHASE 4 completion authorization
+- Projection runtime implementation before Audit1 issues and the Human Architecture Owner authorizes a future runtime Work Order
+- Actual INVENTORY write-back
+- Supplier-contract `lead_time_days` authority implementation without its own authorization
+- Reorder Point runtime or Recommended Order Quantity implementation
+- PHASE 6 work
 - Main merge or main push without separate approval
 - Frozen document modification without an explicit architecture process
 - Unapproved external write
@@ -325,14 +360,12 @@ These limitations and risks do not change the current Drive or Coupang operation
 
 The following are not complete or not implemented:
 
-- PHASE 4 overall
 - production database persistence
 - actual TOPSPEED business-data ingestion
 - Google Sheets production synchronization
 - production Data Hub synchronization
-- `CONTENT_ASSET` Adapter
 - `APPROVAL_QUEUE` execution engine
-- `AI_RUN_LOG` execution engine
+- `AI_RUN_LOG` execution engine and actual records
 - HQ Orchestrator
 - Skill Router
 - six specialized Skills
@@ -340,20 +373,25 @@ The following are not complete or not implemented:
 - advertising write adapter
 - pricing write adapter
 - purchase/order write adapter
-- PHASE 5 deterministic calculation engine
+- Safety Stock Read-Only Projection runtime
+- actual INVENTORY write-back
+- authoritative supplier-contract `lead_time_days` path
+- Reorder Point runtime
+- Recommended Order Quantity
 
-The current repository must not be described as a complete AI OS, complete AI employee system, or production-ready autonomous commerce system. Current PHASE 4 status is IN PROGRESS.
+The current repository must not be described as a complete AI OS, complete AI employee system, or production-ready autonomous commerce system. PHASE 4 is COMPLETE; PHASE 5 is NOT COMPLETE.
 
 ## NEXT GATE
 
-1. Separate Architecture Gate for the next PHASE 4 Slice
-2. PHASE 4 completion-condition reevaluation
+Audit1 eligibility determination for a future separately authorized Safety Stock Read-Only Projection runtime Work Order.
 
-No next Slice is selected or authorized by this document.
+This HANDOFF does not authorize Projection runtime implementation, lead-time authority, Reorder Point runtime, or another Slice.
 
-PHASE 4 overall = NOT COMPLETE
+PHASE 4 overall = COMPLETE
 
-PHASE 5 = NOT STARTED
+PHASE 5 = NOT COMPLETE
+
+PHASE 6 = NOT STARTED
 
 ## LAST AUDIT RESULT
 
@@ -371,18 +409,31 @@ PHASE 5 = NOT STARTED
 - PHASE 3 final aggregate audit = PASS
 - PHASE 3 overall = PASS
 - PHASE 4 entry = COMPLETE / AUTHORIZED
-- PHASE 4 synthetic slices published = `AD_DAILY`, `CHANNEL_DAILY`, `PRODUCT_MASTER`, `INVENTORY`, `PRODUCT_FACT`
+- PHASE 4 synthetic slices published = `AD_DAILY`, `CHANNEL_DAILY`, `PRODUCT_MASTER`, `INVENTORY`, `PRODUCT_FACT`, `CONTENT_ASSET`
 - PRODUCT_FACT ADR = PASS / PUBLISHED
 - PRODUCT_FACT implementation Audit1 = PASS
 - PRODUCT_FACT implementation Audit2 = PASS
 - PRODUCT_FACT Publication Gate = PASS
 - PRODUCT_FACT publication CI = PASS
-- PRODUCT_FACT remote implementation HEAD = `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
-- PHASE 4 implementation = IN PROGRESS
-- PHASE 4 overall = NOT COMPLETE
-- PHASE 5 = NOT STARTED
+- Historical PRODUCT_FACT implementation HEAD = `a62dec0ee4f957b34fc3080744aa44ba7be9ec73`
+- PHASE 4 implementation = COMPLETE
+- PHASE 4 overall = COMPLETE
+- LATEST AUDITED AND PUBLISHED IMPLEMENTATION / ARCHITECTURE BASELINE = `d7eb93ad63d4bdb1529027367a9369c56cec0617`
+- Latest exact-SHA CI = Phase 2 Contract CI run `38877739190`, completed / success
+- PHASE 5 published runtime = Contribution Margin, AD Daily Advertising Metrics, Inventory Demand Velocity, Inventory Stock Days, Safety Stock Policy Authority Producer, Safety Stock Runtime
+- PHASE 5 published Architecture-only scope = Inventory Reorder Point V1, Inventory Safety Stock Read-Only Projection V1
+- Safety Stock Read-Only Projection runtime = NOT IMPLEMENTED / NOT OPERATIONALLY AUTHORIZED
+- Actual INVENTORY write-back = NOT AUTHORIZED
+- Authoritative supplier-contract `lead_time_days` path = STILL REQUIRED
+- Reorder Point runtime = NOT IMPLEMENTED / NOT AUTHORIZED
+- Recommended Order Quantity = NOT AUTHORIZED
+- `APPROVAL_QUEUE` execution engine = NOT IMPLEMENTED
+- `AI_RUN_LOG` execution engine and actual records = NOT IMPLEMENTED
+- HQ Orchestrator, Skill Router, and six operational Skills = NOT IMPLEMENTED
+- PHASE 5 = NOT COMPLETE
+- PHASE 6 = NOT STARTED
 
-PHASE 4 entry was separately authorized; PHASE 3 PASS alone did not provide that authorization.
+PHASE 4 entry was separately authorized; PHASE 3 PASS alone did not provide that authorization. CI success is not evidence of business performance.
 
 ## OPERATING RULES
 
@@ -396,5 +447,5 @@ PHASE 4 entry was separately authorized; PHASE 3 PASS alone did not provide that
 8. Repository source and Frozen documents override HANDOFF on conflict.
 9. HANDOFF updates require independent audit before publication.
 10. Presence of this document never authorizes the next phase.
-11. CANONICAL IMPLEMENTATION HEAD is an implementation/evidence baseline, not necessarily the current Git branch HEAD.
-12. Actual Git branch HEAD must be independently resolved at the beginning of every execution task.
+11. HANDOFF-only documentation correction commits are excluded from the latest audited and published implementation / Architecture baseline.
+12. Actual local and remote branch tips must be resolved directly from Git at the start of every task.
