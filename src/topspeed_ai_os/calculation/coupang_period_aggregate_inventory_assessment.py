@@ -345,8 +345,10 @@ def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, 
     _equal(metadata.source, _SOURCE, "source")
     _equal(metadata.source_uri, spec.source_uri, "source_uri")
     _equal(metadata.content_type, _CONTENT_TYPE, "content_type")
-    _equal(metadata.http_status, None, "http_status")
-    _equal(metadata.modified_time, None, "modified_time")
+    if metadata.http_status is not None:
+        raise ValueError("http_status does not match the approved contract")
+    if metadata.modified_time is not None:
+        raise ValueError("modified_time does not match the approved contract")
     created = _workbook_created_at(raw)
     created_text = created.isoformat()
     _source_time(created_text)

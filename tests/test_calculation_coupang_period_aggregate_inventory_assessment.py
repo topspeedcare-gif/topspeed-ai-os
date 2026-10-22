@@ -532,6 +532,27 @@ def test_typed_source_metadata_cannot_be_relabelled(field, value):
         produce_aggregate(metadata_change(source_result(), **{field: value}))
 
 
+@pytest.mark.parametrize("field", ["http_status", "modified_time"])
+def test_non_none_equality_spoof_is_rejected_at_the_exact_metadata_field(field):
+    class EqualitySpoof:
+        def __eq__(self, other):
+            return other is None
+
+    spoof = EqualitySpoof()
+    assert spoof is not None
+    assert spoof.__eq__(None) is True
+    for kind, producer in ((SALES, produce_aggregate), (INVENTORY, produce_inventory)):
+        original = source_result(kind)
+        assert original.source_metadata.http_status is None
+        assert original.source_metadata.modified_time is None
+        expected = producer(original)
+        altered = metadata_change(original, **{field: spoof})
+        assert getattr(altered.source_metadata, field) is spoof
+        with pytest.raises(ValueError, match=f"^{field} does not match the approved contract$"):
+            producer(altered)
+        assert producer(original) == expected
+
+
 @pytest.mark.parametrize(
     "field,value",
     [
