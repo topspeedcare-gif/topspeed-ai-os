@@ -12,6 +12,7 @@ from topspeed_ai_os.tools.checksum import raw_sha256
 from topspeed_ai_os.tools.read.coupang_wing_export import (
     _INVENTORY,
     _SALES,
+    _completed_period_close,
     _parse_worksheet,
     _workbook_created_at,
 )
@@ -34,18 +35,21 @@ _IDENTITY = {
     "vendor_item_id": "92849878174",
 }
 _COUPANG_SKU = "61654574"
-_START = "2026-09-20"
-_END = "2026-10-19"
 _TIMEZONE = "Asia/Seoul"
-_CLOSE_TEXT = "2026-10-20T00:00:00+09:00"
-_CLOSE = datetime.fromisoformat(_CLOSE_TEXT)
+_INVENTORY_V1_CLOSE = datetime.fromisoformat("2026-10-20T00:00:00+09:00")
 _SOURCE = "coupang_wing_export"
 _SCHEMA = "topspeed.coupang_wing_export.source_envelope.v1"
+_SALES_SCHEMA = "topspeed.coupang_wing_export.source_envelope.v2"
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _AUTHORITY = (
     "docs/architecture/"
     "ADR_PHASE5_COUPANG_PERIOD_AGGREGATE_READ_ONLY_INVENTORY_ASSESSMENT_V1.md"
     "@f5952d3dcb808c4cb65e6f18bc64b52afcbeab6d"
+)
+_SALES_AUTHORITY = (
+    "docs/architecture/"
+    "ADR_PHASE5_COUPANG_L_REPEATABLE_COMPLETED_30D_READ_ONLY_AUTHORITY_V1.md"
+    "@b02fb74a766f4f85e7c7d878a3a5faa4a16bc7ba"
 )
 _HASH = re.compile(r"sha256:[0-9a-f]{64}")
 _UNSIGNED = re.compile(r"0|[1-9][0-9]*")
@@ -71,11 +75,11 @@ def _canonical_hash(value: str) -> None:
         raise ValueError("Hash is not canonical lowercase SHA-256")
 
 
-def _source_time(value: str) -> datetime:
+def _source_time(value: str, *, not_before: datetime) -> datetime:
     if _TIMESTAMP.fullmatch(value) is None:
         raise ValueError("Source time must be canonical whole-second +09:00")
     parsed = datetime.fromisoformat(value)
-    if parsed.isoformat() != value or parsed < _CLOSE:
+    if parsed.isoformat() != value or parsed < not_before:
         raise ValueError("Source time is noncanonical or pre-close")
     return parsed
 
@@ -177,10 +181,10 @@ def _validate_aggregate(aggregate: _CoupangVendorItemPeriodAggregate) -> None:
     _carrier_types(aggregate, {"gross_sold_units", "cancelled_units", "net_sold_units"})
     _identity(aggregate)
     _equal(aggregate.sales_mode, "로켓그로스", "sales_mode")
-    _equal(aggregate.period_start_date, _START, "period_start_date")
-    _equal(aggregate.period_end_date, _END, "period_end_date")
-    _equal(aggregate.period_timezone, _TIMEZONE, "period_timezone")
-    _source_time(aggregate.exported_at)
+    close = _completed_period_close(
+        aggregate.period_start_date, aggregate.period_end_date, aggregate.period_timezone
+    )
+    _source_time(aggregate.exported_at, not_before=close)
     if min(aggregate.gross_sold_units, aggregate.cancelled_units, aggregate.net_sold_units) < 0:
         raise ValueError("Aggregate quantities must be nonnegative")
     if aggregate.net_sold_units != aggregate.gross_sold_units - aggregate.cancelled_units:
@@ -201,7 +205,7 @@ def _validate_inventory(inventory: _CoupangInventoryAvailabilityObservation) -> 
     _carrier_types(inventory, {"available_qty", "inbound_qty", "customer_return_units"})
     _identity(inventory)
     _equal(inventory.coupang_sku_id, _COUPANG_SKU, "coupang_sku_id")
-    _source_time(inventory.observed_at)
+    _source_time(inventory.observed_at, not_before=_INVENTORY_V1_CLOSE)
     if min(inventory.available_qty, inventory.inbound_qty, inventory.customer_return_units) < 0:
         raise ValueError("Inventory observations must be nonnegative")
     _equal(inventory.source, _SOURCE, "source")
@@ -270,6 +274,7 @@ def _validate_assessment(result: _CoupangPeriodAggregateInventoryAssessment) -> 
             )
     _validate_aggregate(result.aggregate_ref)
     _validate_inventory(result.inventory_ref)
+    _validate_cross_source_close(result.aggregate_ref, result.inventory_ref)
     _formula_and_run(result.formula_version, result.run_id)
     aggregate, inventory = result.aggregate_ref, result.inventory_ref
     average, indicative, status = _calculated_values(
@@ -301,7 +306,16 @@ def _validate_assessment(result: _CoupangPeriodAggregateInventoryAssessment) -> 
     )
 
 
-def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, str]:
+def _validate_cross_source_close(aggregate, inventory) -> None:
+    close = _completed_period_close(
+        aggregate.period_start_date, aggregate.period_end_date, aggregate.period_timezone
+    )
+    _source_time(inventory.observed_at, not_before=close)
+
+
+def _validated_source(
+    tool_result: ToolResult, spec
+) -> tuple[TabularData, str, str, tuple[str, str, str] | None]:
     """Validate one invocation-owned snapshot; neither hashes nor class identity authenticate it."""
     _exact(tool_result, ToolResult, "tool_result")
     _exact(tool_result.status, ToolStatus, "status")
@@ -351,26 +365,36 @@ def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, 
         raise ValueError("modified_time does not match the approved contract")
     created = _workbook_created_at(raw)
     created_text = created.isoformat()
-    _source_time(created_text)
+    sales = spec is _SALES
+    selection = None
+    if sales:
+        if not {"period_start", "period_end", "period_timezone"}.issubset(specific):
+            raise ValueError("Source selection metadata is missing")
+        selection = tuple(
+            specific.get(name) for name in ("period_start", "period_end", "period_timezone")
+        )
+        close = _completed_period_close(*selection)
+    else:
+        close = _INVENTORY_V1_CLOSE
+    _source_time(created_text, not_before=close)
     _exact(metadata.fetched_at, datetime, "fetched_at")
     if metadata.fetched_at.utcoffset() is None or metadata.fetched_at < created:
         raise ValueError("Source acquisition must be aware and not precede workbook creation")
-    data_as_of = _CLOSE if spec is _SALES else created
+    data_as_of = close if sales else created
     _exact(metadata.data_as_of, datetime, "data_as_of")
     _equal(metadata.data_as_of.isoformat(), data_as_of.isoformat(), "data_as_of")
-    sales = spec is _SALES
     expected = {
-        "schema_version": _SCHEMA,
+        "schema_version": _SALES_SCHEMA if sales else _SCHEMA,
         "export_kind": "SALES_PERIOD_AGGREGATE" if sales else "INVENTORY_HEALTH_OBSERVATION",
         "worksheet_name": spec.worksheet,
         "workbook_created_at": created_text,
         "raw_artifact_checksum_sha256": checksum,
         "original_source_uri": spec.source_uri,
-        "period_start": _START if sales else None,
-        "period_end": _END if sales else None,
+        "period_start": selection[0] if sales else None,
+        "period_end": selection[1] if sales else None,
         "period_timezone": _TIMEZONE if sales else None,
-        "period_close": _CLOSE_TEXT if sales else None,
-        "selection_authority_reference": _AUTHORITY,
+        "period_close": close.isoformat() if sales else None,
+        "selection_authority_reference": _SALES_AUTHORITY if sales else _AUTHORITY,
     }
     _equal(set(specific), set(expected) | {"envelope_sha256"}, "metadata key set")
     for name, value in expected.items():
@@ -378,7 +402,7 @@ def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, 
         _equal(specific[name], value, name)
     _exact(specific["envelope_sha256"], str, "envelope_sha256")
     envelope = {
-        "schema_version": _SCHEMA,
+        "schema_version": expected["schema_version"],
         "source": _SOURCE,
         "source_uri": spec.source_uri,
         "export_kind": expected["export_kind"],
@@ -390,7 +414,7 @@ def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, 
         "period_timezone": expected["period_timezone"],
         "period_close": expected["period_close"],
         "data_as_of": data_as_of.isoformat(),
-        "selection_authority_reference": _AUTHORITY,
+        "selection_authority_reference": expected["selection_authority_reference"],
     }
     _equal(specific["envelope_sha256"], payload_sha256(envelope), "envelope hash")
     table = tool_result.parsed_result
@@ -412,7 +436,7 @@ def _validated_source(tool_result: ToolResult, spec) -> tuple[TabularData, str, 
         for value, original in zip(row, original_row, strict=True)
     ):
         raise ValueError("Parsed worksheet is not bound to the original bytes")
-    return snapshot, created_text, checksum
+    return snapshot, created_text, checksum, selection
 
 
 def _target_row(table: TabularData, seller_header: str) -> dict[str, object]:
@@ -443,7 +467,7 @@ def _quantity(value: object, *, signed: bool = False) -> int:
 def _produce_coupang_vendor_item_period_aggregate(
     tool_result: ToolResult,
 ) -> _CoupangVendorItemPeriodAggregate:
-    table, created, checksum = _validated_source(tool_result, _SALES)
+    table, created, checksum, selection = _validated_source(tool_result, _SALES)
     row = _target_row(table, "등록상품ID")
     _exact(row["판매방식"], str, "sales_mode")
     _equal(row["판매방식"], "로켓그로스", "sales_mode")
@@ -453,9 +477,9 @@ def _produce_coupang_vendor_item_period_aggregate(
     values = {
         **_IDENTITY,
         "sales_mode": "로켓그로스",
-        "period_start_date": _START,
-        "period_end_date": _END,
-        "period_timezone": _TIMEZONE,
+        "period_start_date": selection[0],
+        "period_end_date": selection[1],
+        "period_timezone": selection[2],
         "exported_at": created,
         "gross_sold_units": gross,
         "cancelled_units": cancelled,
@@ -473,7 +497,7 @@ def _produce_coupang_vendor_item_period_aggregate(
 def _produce_coupang_inventory_availability_observation(
     tool_result: ToolResult,
 ) -> _CoupangInventoryAvailabilityObservation:
-    table, created, checksum = _validated_source(tool_result, _INVENTORY)
+    table, created, checksum, _ = _validated_source(tool_result, _INVENTORY)
     row = _target_row(table, "등록상품 ID")
     _exact(row["SKU ID"], str, "coupang_sku_id")
     _equal(row["SKU ID"], _COUPANG_SKU, "coupang_sku_id")
@@ -506,6 +530,7 @@ def _assess_coupang_period_aggregate_inventory(
     """Revalidate carriers, not raw workbook authenticity; no Source or operational authority."""
     _validate_aggregate(aggregate)
     _validate_inventory(inventory)
+    _validate_cross_source_close(aggregate, inventory)
     for name in _IDENTITY:
         _equal(getattr(aggregate, name), getattr(inventory, name), "cross-source " + name)
     _formula_and_run(formula_version, run_id)

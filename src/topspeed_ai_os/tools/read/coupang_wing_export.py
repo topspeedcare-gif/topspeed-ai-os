@@ -6,7 +6,7 @@ import io
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from xml.etree.ElementTree import fromstring
 from zipfile import BadZipFile, ZipFile
 
@@ -26,6 +26,7 @@ _SOURCE = "coupang_wing_export"
 _TOOL_NAME = "coupang_wing_export_read"
 _INVALID_OPERATION = "coupang_wing_export.read_invalid_request"
 _SCHEMA_VERSION = "topspeed.coupang_wing_export.source_envelope.v1"
+_SALES_SCHEMA_VERSION = "topspeed.coupang_wing_export.source_envelope.v2"
 _CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 _WORKBOOK_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
@@ -35,9 +36,15 @@ _SELECTION_REFERENCE = (
     "ADR_PHASE5_COUPANG_PERIOD_AGGREGATE_READ_ONLY_INVENTORY_ASSESSMENT_V1.md"
     "@f5952d3dcb808c4cb65e6f18bc64b52afcbeab6d"
 )
+_SALES_SELECTION_REFERENCE = (
+    "docs/architecture/"
+    "ADR_PHASE5_COUPANG_L_REPEATABLE_COMPLETED_30D_READ_ONLY_AUTHORITY_V1.md"
+    "@b02fb74a766f4f85e7c7d878a3a5faa4a16bc7ba"
+)
 _KST = timezone(timedelta(hours=9))
-_CLOSE = datetime(2026, 10, 20, tzinfo=_KST)
-_SALES_SELECTION = ("2026-09-20", "2026-10-19", "Asia/Seoul")
+# Inventory V1 retains its published earliest-observation boundary. The
+# assessment additionally enforces the caller's dynamic sales-period close.
+_INVENTORY_V1_CLOSE = datetime(2026, 10, 20, tzinfo=_KST)
 _CREATED_TAG = "{http://purl.org/dc/terms/}created"
 _CONTENT_OVERRIDE = "{http://schemas.openxmlformats.org/package/2006/content-types}Override"
 _CREATED_PATTERN = re.compile(
@@ -88,21 +95,47 @@ def _select_spec(export_kind: str) -> _ExportSpec:
     raise ToolFailure(_Category.MALFORMED_INPUT, "Export kind is invalid")
 
 
+def _completed_period_close(period_start: str, period_end: str, period_timezone: str) -> datetime:
+    """Validate explicit selection only; no workbook or acquisition-time inference."""
+    if any(type(value) is not str for value in (period_start, period_end, period_timezone)):
+        raise TypeError("Period fields must be exact strings")
+    if period_timezone != "Asia/Seoul":
+        raise ValueError("Period timezone is not authorized")
+    for value in (period_start, period_end):
+        if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", value) is None:
+            raise ValueError("Period date is not canonical")
+    start, end = date.fromisoformat(period_start), date.fromisoformat(period_end)
+    if start.isoformat() != period_start or end.isoformat() != period_end:
+        raise ValueError("Period date is not canonical")
+    if (end - start).days != 29:
+        raise ValueError("Period must contain exactly thirty inclusive days")
+    try:
+        close_date = end + timedelta(days=1)
+    except OverflowError as exc:
+        raise ValueError("Period close is outside the supported calendar") from exc
+    return datetime(close_date.year, close_date.month, close_date.day, tzinfo=_KST)
+
+
 def _validate_request(
     raw_bytes: bytes,
     spec: _ExportSpec,
     period_start: str | None,
     period_end: str | None,
     period_timezone: str | None,
-) -> None:
+) -> datetime | None:
     if type(raw_bytes) is not bytes:
         raise ToolFailure(_Category.MALFORMED_INPUT, "Original input must be exact bytes")
     selection = (period_start, period_end, period_timezone)
     if spec is _SALES:
-        if any(type(value) is not str for value in selection) or selection != _SALES_SELECTION:
-            raise ToolFailure(_Category.MALFORMED_INPUT, "Sales selection is not authorized")
+        try:
+            return _completed_period_close(*selection)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ToolFailure(
+                _Category.MALFORMED_INPUT, "Sales selection is not authorized"
+            ) from exc
     elif any(value is not None for value in selection):
         raise ToolFailure(_Category.MALFORMED_INPUT, "Inventory does not accept period fields")
+    return None
 
 
 def _workbook_created_at(raw_bytes: bytes) -> datetime:
@@ -209,12 +242,16 @@ def _source_metadata(
     period_start: str | None,
     period_end: str | None,
     period_timezone: str | None,
+    close: datetime | None,
 ) -> SourceMetadata:
-    data_as_of = _CLOSE if spec is _SALES else created_at
-    period_close = _CLOSE.isoformat() if spec is _SALES else None
+    sales = spec is _SALES
+    data_as_of = close if sales else created_at
+    period_close = close.isoformat() if sales else None
+    schema = _SALES_SCHEMA_VERSION if sales else _SCHEMA_VERSION
+    authority = _SALES_SELECTION_REFERENCE if sales else _SELECTION_REFERENCE
     created_text = created_at.isoformat()
     envelope = {
-        "schema_version": _SCHEMA_VERSION,
+        "schema_version": schema,
         "source": _SOURCE,
         "source_uri": spec.source_uri,
         "export_kind": export_kind,
@@ -226,7 +263,7 @@ def _source_metadata(
         "period_timezone": period_timezone,
         "period_close": period_close,
         "data_as_of": data_as_of.isoformat(),
-        "selection_authority_reference": _SELECTION_REFERENCE,
+        "selection_authority_reference": authority,
     }
     # Fresh scalar-only dictionary: no producer reference or shared mutable backing survives.
     return SourceMetadata(
@@ -239,7 +276,7 @@ def _source_metadata(
         http_status=None,
         modified_time=None,
         source_specific_metadata={
-            "schema_version": _SCHEMA_VERSION,
+            "schema_version": schema,
             "export_kind": export_kind,
             "worksheet_name": spec.worksheet,
             "workbook_created_at": created_text,
@@ -249,7 +286,7 @@ def _source_metadata(
             "period_end": period_end,
             "period_timezone": period_timezone,
             "period_close": period_close,
-            "selection_authority_reference": _SELECTION_REFERENCE,
+            "selection_authority_reference": authority,
             "envelope_sha256": payload_sha256(envelope),
         },
     )
@@ -290,10 +327,11 @@ class CoupangWingExportReadTool(ReadTool):
         try:
             spec = _select_spec(export_kind)
             operation = spec.operation
-            _validate_request(raw_bytes, spec, period_start, period_end, period_timezone)
+            close = _validate_request(raw_bytes, spec, period_start, period_end, period_timezone)
             checksum = raw_sha256(raw_bytes)
             created_at = _workbook_created_at(raw_bytes)
-            if created_at < _CLOSE or fetched_at < created_at:
+            earliest = close if spec is _SALES else _INVENTORY_V1_CLOSE
+            if created_at < earliest or fetched_at < created_at:
                 raise ToolFailure(_Category.MALFORMED_SOURCE, "Workbook source time is ineligible")
             parsed = _parse_worksheet(raw_bytes, spec)
             metadata = _source_metadata(
@@ -305,6 +343,7 @@ class CoupangWingExportReadTool(ReadTool):
                 period_start=period_start,
                 period_end=period_end,
                 period_timezone=period_timezone,
+                close=close,
             )
         except ToolFailure as failure:
             return self._failed(operation, context, failure)

@@ -103,13 +103,22 @@ def book(kind=SALES, *, rows=None, headers=None, created="2026-10-20T00:00:00+09
     return output.getvalue()
 
 
-def source_result(kind=SALES, *, raw=None, **book_arguments):
+def source_result(
+    kind=SALES,
+    *,
+    raw=None,
+    period_start="2026-09-20",
+    period_end="2026-10-19",
+    fetched_at=None,
+    **book_arguments,
+):
     raw = book(kind, **book_arguments) if raw is None else raw
     tool = CoupangWingExportReadTool(
-        clock=lambda: CLOSE + timedelta(days=2), request_id_factory=lambda: "req_" + "c" * 32
+        clock=lambda: CLOSE + timedelta(days=2) if fetched_at is None else fetched_at,
+        request_id_factory=lambda: "req_" + "c" * 32,
     )
     selection = (
-        {"period_start": "2026-09-20", "period_end": "2026-10-19", "period_timezone": "Asia/Seoul"}
+        {"period_start": period_start, "period_end": period_end, "period_timezone": "Asia/Seoul"}
         if kind == SALES
         else {}
     )
@@ -773,3 +782,120 @@ def test_no_filesystem_network_environment_credential_or_external_write_behavior
     assert (
         assess(aggregate, inventory, run_id=RUN).status == "ABOVE_OR_EQUAL_INDICATIVE_SAFETY_STOCK"
     )
+
+
+@pytest.mark.parametrize(
+    "start,end,close_text",
+    [
+        ("2026-09-20", "2026-10-19", "2026-10-20T00:00:00+09:00"),
+        ("2026-10-02", "2026-10-31", "2026-11-01T00:00:00+09:00"),
+        ("2026-12-15", "2027-01-13", "2027-01-14T00:00:00+09:00"),
+        ("2028-02-01", "2028-03-01", "2028-03-02T00:00:00+09:00"),
+    ],
+)
+def test_dynamic_period_survives_source_producer_and_independent_hash_validation(
+    start, end, close_text
+):
+    close = datetime.fromisoformat(close_text)
+    sales = source_result(period_start=start, period_end=end, created=close_text, fetched_at=close)
+    inventory = source_result(INVENTORY, created=close_text, fetched_at=close)
+    aggregate, observation = produce_aggregate(sales), produce_inventory(inventory)
+    result = assess(aggregate, observation, run_id=RUN)
+    assert result.period_start_date == start
+    assert result.period_end_date == end
+    assert aggregate.exported_at == observation.observed_at == close_text
+    assert aggregate.input_hash == independent_hash(
+        carrier_payload(aggregate, "COUPANG_VENDOR_ITEM_PERIOD_AGGREGATE")
+    )
+    assert observation.input_hash == independent_hash(
+        carrier_payload(observation, "COUPANG_INVENTORY_AVAILABILITY_OBSERVATION")
+    )
+    assert result.input_hash == independent_hash(
+        {
+            "formula_version": VERSION,
+            "channel": "COUPANG",
+            "internal_sku": "TS-WAIST-BRACE-L",
+            "period_start_date": start,
+            "period_end_date": end,
+            "period_days": 30,
+            "indicative_safety_stock_days": 7,
+            "aggregate_ref.input_hash": aggregate.input_hash,
+            "inventory_ref.input_hash": observation.input_hash,
+        }
+    )
+    assert result.net_sold_units == 17
+    assert result.avg_daily_units == "0.5667"
+    assert result.indicative_safety_stock_qty == 4
+    assert result.available_qty == 12
+    assert result.inbound_qty == 4
+    assert result.customer_return_units == 3
+
+
+@pytest.mark.parametrize("offset", [-1, 0])
+def test_dynamic_cross_source_close_is_enforced_in_callable_and_result_constructor(offset):
+    close = datetime.fromisoformat("2026-11-01T00:00:00+09:00")
+    aggregate = produce_aggregate(
+        source_result(
+            period_start="2026-10-02",
+            period_end="2026-10-31",
+            created=close.isoformat(),
+            fetched_at=close,
+        )
+    )
+    observation = produce_inventory(
+        source_result(
+            INVENTORY, created=(close + timedelta(seconds=offset)).isoformat(), fetched_at=close
+        )
+    )
+    if offset < 0:
+        with pytest.raises(ValueError, match="pre-close"):
+            assess(aggregate, observation, run_id=RUN)
+        valid = produce_inventory(
+            source_result(INVENTORY, created=close.isoformat(), fetched_at=close)
+        )
+        with pytest.raises(ValueError, match="pre-close"):
+            replace(assess(aggregate, valid, run_id=RUN), inventory_ref=observation)
+    else:
+        assert assess(aggregate, observation, run_id=RUN).inventory_observed_at == close.isoformat()
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"schema_version": "topspeed.coupang_wing_export.source_envelope.v1"},
+        {"selection_authority_reference": "docs/architecture/unpinned.md"},
+        {"period_close": "2026-11-01T00:00:01+09:00"},
+        {"period_start": "2026-10-03"},
+        {"period_end": "2026-10-30"},
+        {"period_timezone": "+09:00"},
+        {"workbook_created_at": "2026-11-01T00:00:01+09:00"},
+    ],
+)
+def test_rehashed_dynamic_source_cannot_bypass_temporal_or_v2_provenance_contract(updates):
+    close = datetime.fromisoformat("2026-11-01T00:00:00+09:00")
+    source = source_result(
+        period_start="2026-10-02",
+        period_end="2026-10-31",
+        created=close.isoformat(),
+        fetched_at=close,
+    )
+    with pytest.raises(ValueError):
+        produce_aggregate(resign_source(source, **updates))
+
+
+def test_valid_new_period_with_stale_carrier_hash_is_rejected():
+    close = datetime.fromisoformat("2026-11-01T00:00:00+09:00")
+    aggregate = produce_aggregate(
+        source_result(
+            period_start="2026-10-02",
+            period_end="2026-10-31",
+            created=close.isoformat(),
+            fetched_at=close,
+        )
+    )
+    observation = produce_inventory(
+        source_result(INVENTORY, created=close.isoformat(), fetched_at=close)
+    )
+    altered = forged(aggregate, period_start_date="2026-10-01", period_end_date="2026-10-30")
+    with pytest.raises(ValueError, match="input_hash"):
+        assess(altered, observation, run_id=RUN)

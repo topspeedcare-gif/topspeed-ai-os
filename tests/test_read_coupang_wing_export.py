@@ -67,6 +67,11 @@ AUTHORITY_REFERENCE = (
     "ADR_PHASE5_COUPANG_PERIOD_AGGREGATE_READ_ONLY_INVENTORY_ASSESSMENT_V1.md"
     "@f5952d3dcb808c4cb65e6f18bc64b52afcbeab6d"
 )
+SALES_AUTHORITY_REFERENCE = (
+    "docs/architecture/"
+    "ADR_PHASE5_COUPANG_L_REPEATABLE_COMPLETED_30D_READ_ONLY_AUTHORITY_V1.md"
+    "@b02fb74a766f4f85e7c7d878a3a5faa4a16bc7ba"
+)
 
 
 def _rewrite_parts(raw, replacements=None, *, remove=(), comment=b""):
@@ -160,7 +165,11 @@ def _independent_hash(payload):
 def _expected_envelope(raw, kind, created_text):
     sales = kind == SALES
     return {
-        "schema_version": "topspeed.coupang_wing_export.source_envelope.v1",
+        "schema_version": (
+            "topspeed.coupang_wing_export.source_envelope.v2"
+            if sales
+            else "topspeed.coupang_wing_export.source_envelope.v1"
+        ),
         "source": "coupang_wing_export",
         "source_uri": (
             "coupang-wing://seller-insights/vendor-item-metrics"
@@ -176,7 +185,9 @@ def _expected_envelope(raw, kind, created_text):
         "period_timezone": "Asia/Seoul" if sales else None,
         "period_close": CLOSE.isoformat() if sales else None,
         "data_as_of": CLOSE.isoformat() if sales else created_text,
-        "selection_authority_reference": AUTHORITY_REFERENCE,
+        "selection_authority_reference": SALES_AUTHORITY_REFERENCE
+        if sales
+        else AUTHORITY_REFERENCE,
     }
 
 
@@ -249,7 +260,7 @@ def test_successful_envelope_has_exact_source_time_bytes_and_independent_hash(
         "period_end": expected["period_end"],
         "period_timezone": expected["period_timezone"],
         "period_close": expected["period_close"],
-        "selection_authority_reference": AUTHORITY_REFERENCE,
+        "selection_authority_reference": expected["selection_authority_reference"],
         "envelope_sha256": _independent_hash(expected),
     }
     assert type(result.raw_result) is SensitiveBytes
@@ -683,3 +694,96 @@ def test_source_boundary_uses_no_filesystem_network_or_environment(monkeypatch):
     monkeypatch.setattr(socket, "socket", forbidden)
     monkeypatch.setattr(os, "getenv", forbidden)
     assert _read(raw).status is ToolStatus.SUCCESS
+
+
+@pytest.mark.parametrize(
+    "start,end,close_text",
+    [
+        ("2026-09-20", "2026-10-19", "2026-10-20T00:00:00+09:00"),
+        ("2026-10-02", "2026-10-31", "2026-11-01T00:00:00+09:00"),
+        ("2026-12-15", "2027-01-13", "2027-01-14T00:00:00+09:00"),
+        ("2028-02-01", "2028-03-01", "2028-03-02T00:00:00+09:00"),
+        ("2027-02-01", "2027-03-02", "2027-03-03T00:00:00+09:00"),
+        ("2024-02-01", "2024-03-01", "2024-03-02T00:00:00+09:00"),
+    ],
+)
+def test_explicit_completed_period_derives_v2_close_without_date_inference(start, end, close_text):
+    close = datetime.fromisoformat(close_text)
+    raw = _book(created=close_text)
+    calls = []
+
+    def clock():
+        calls.append(True)
+        return close + timedelta(days=1)
+
+    result = _read(raw, period_start=start, period_end=end, tool=_tool(clock=clock))
+    assert result.status is ToolStatus.SUCCESS
+    assert calls == [True]
+    metadata = result.source_metadata
+    expected = {
+        **_expected_envelope(raw, SALES, close_text),
+        "period_start": start,
+        "period_end": end,
+        "period_close": close_text,
+        "data_as_of": close_text,
+    }
+    assert metadata.data_as_of == close
+    assert set(metadata.source_specific_metadata) == METADATA_KEYS
+    assert metadata.source_specific_metadata["schema_version"] == expected["schema_version"]
+    assert metadata.source_specific_metadata["selection_authority_reference"] == (
+        SALES_AUTHORITY_REFERENCE
+    )
+    assert metadata.source_specific_metadata["envelope_sha256"] == _independent_hash(expected)
+
+
+@pytest.mark.parametrize(
+    "start,end,zone",
+    [
+        ("2026-10-02", "2026-10-30", "Asia/Seoul"),  # 29 days
+        ("2026-10-01", "2026-10-31", "Asia/Seoul"),  # 31 days
+        ("2027-02-29", "2027-03-30", "Asia/Seoul"),
+        ("2026-11-31", "2026-12-30", "Asia/Seoul"),
+        ("20261002", "20261031", "Asia/Seoul"),
+        ("2026-10-2", "2026-10-31", "Asia/Seoul"),
+        ("2026-10-02 ", "2026-10-31", "Asia/Seoul"),
+        ("2026-10-31", "2026-10-02", "Asia/Seoul"),
+        ("2026-10-02", "2026-10-31", "+09:00"),
+        ("9999-12-02", "9999-12-31", "Asia/Seoul"),
+    ],
+)
+def test_noncanonical_or_not_exactly_thirty_day_period_fails_closed(start, end, zone):
+    result = _read(_book(), period_start=start, period_end=end, period_timezone=zone)
+    assert result.status is ToolStatus.FAILED
+    assert result.error.category is ErrorCategory.MALFORMED_INPUT
+    assert result.raw_result is result.source_metadata is result.parsed_result is None
+
+
+@pytest.mark.parametrize("offset", [-1, 0])
+def test_dynamic_sales_close_boundary(offset):
+    close = datetime(2027, 1, 14, tzinfo=KST)
+    created = close + timedelta(seconds=offset)
+    result = _read(
+        _book(created=created.isoformat()),
+        period_start="2026-12-15",
+        period_end="2027-01-13",
+        tool=_tool(now=close),
+    )
+    assert result.status is (ToolStatus.FAILED if offset < 0 else ToolStatus.SUCCESS)
+    if offset < 0:
+        assert result.error.category is ErrorCategory.MALFORMED_SOURCE
+
+
+def test_inventory_retains_v1_identity_and_no_sales_period_binding():
+    created = "2027-01-14T00:00:00+09:00"
+    result = _read(
+        _book(INVENTORY, created=created),
+        INVENTORY,
+        tool=_tool(now=datetime.fromisoformat(created)),
+    )
+    specific = result.source_metadata.source_specific_metadata
+    assert result.status is ToolStatus.SUCCESS
+    assert specific["schema_version"] == "topspeed.coupang_wing_export.source_envelope.v1"
+    assert specific["selection_authority_reference"] == AUTHORITY_REFERENCE
+    for name in ("period_start", "period_end", "period_timezone", "period_close"):
+        assert specific[name] is None
+    assert result.source_metadata.data_as_of.isoformat() == created
